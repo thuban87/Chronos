@@ -81,6 +81,26 @@
     color: var(--text-accent);
 }
 
+.chronos-task-clickable {
+    cursor: pointer;
+    transition: background-color 0.15s ease;
+}
+
+.chronos-task-clickable:hover {
+    background-color: var(--background-modifier-hover);
+}
+
+.chronos-task-file-info {
+    margin-top: 4px;
+    font-size: 0.8em;
+}
+
+.chronos-task-filepath {
+    color: var(--text-muted);
+    font-family: var(--font-monospace);
+    word-break: break-all;
+}
+
 /* Date/Time Modal */
 .chronos-datetime-modal {
     padding: 1em;

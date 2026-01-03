@@ -5,7 +5,7 @@ import * as http from 'http';
 const CLIENT_ID = '123909762778-bcrg5jfbrrokgfqrf4kk8lbj0ggjev8m.apps.googleusercontent.com';
 const CLIENT_SECRET = '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';
 const SCOPES = [
-    'https://www.googleapis.com/auth/calendar.events',
+    'https://www.googleapis.com/auth/calendar',  // Full calendar access (list calendars + manage events)
     'https://www.googleapis.com/auth/userinfo.email'
 ];
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
