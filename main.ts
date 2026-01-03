@@ -11,6 +11,7 @@ interface ChronosSettings {
 	defaultReminderMinutes: number[];
 	defaultEventDurationMinutes: number;
 	timeZone: string;
+	completedTaskBehavior: 'delete' | 'markComplete';
 }
 
 interface ChronosData {
@@ -24,7 +25,8 @@ const DEFAULT_SETTINGS: ChronosSettings = {
 	syncIntervalMinutes: 10,
 	defaultReminderMinutes: [30, 10],
 	defaultEventDurationMinutes: 30,
-	timeZone: 'local'
+	timeZone: 'local',
+	completedTaskBehavior: 'markComplete'
 };
 
 export default class ChronosPlugin extends Plugin {
@@ -105,6 +107,7 @@ export default class ChronosPlugin extends Plugin {
 	/**
 	 * Sync all eligible tasks to Google Calendar
 	 * Uses SyncManager for duplicate prevention and change detection
+	 * Also handles completed and deleted tasks
 	 */
 	async syncTasks(silent: boolean = false): Promise<void> {
 		if (!this.isAuthenticated()) {
@@ -120,16 +123,23 @@ export default class ChronosPlugin extends Plugin {
 		if (!silent) new Notice('Chronos: Syncing tasks...');
 
 		try {
-			const tasks = await this.taskParser.scanVault();
+			// Scan for ALL tasks including completed ones
+			const allTasks = await this.taskParser.scanVault(true);
 			const calendarId = this.settings.googleCalendarId;
 
-			// Compute what needs to be done
-			const diff = this.syncManager.computeSyncDiff(tasks, calendarId);
+			// Separate uncompleted and completed tasks
+			const uncompletedTasks = allTasks.filter(t => !t.isCompleted);
+			const completedTasks = allTasks.filter(t => t.isCompleted);
+
+			// Compute what needs to be done for uncompleted tasks
+			const diff = this.syncManager.computeSyncDiff(uncompletedTasks, calendarId);
 
 			const timeZone = this.getTimeZone();
 			let created = 0;
 			let updated = 0;
 			let recreated = 0;
+			let completed = 0;
+			let deleted = 0;
 			let failed = 0;
 			let unchanged = 0;
 
@@ -170,16 +180,12 @@ export default class ChronosPlugin extends Plugin {
 			}
 
 			// Verify "unchanged" events still exist in Google Calendar
-			// (handles case where user deleted events directly in Google)
-			console.log(`Chronos: Checking ${diff.unchanged.length} unchanged tasks for deleted events`);
 			for (const task of diff.unchanged) {
 				const taskId = this.syncManager.generateTaskId(task);
 				const syncInfo = this.syncManager.getSyncInfo(taskId);
-				console.log(`Chronos: Checking task "${task.title}", taskId=${taskId}, eventId=${syncInfo?.eventId}`);
 
 				if (syncInfo) {
 					const exists = await this.calendarApi.eventExists(calendarId, syncInfo.eventId);
-					console.log(`Chronos: Event exists check result: ${exists}`);
 
 					if (!exists) {
 						// Event was deleted externally - recreate it
@@ -203,16 +209,59 @@ export default class ChronosPlugin extends Plugin {
 				}
 			}
 
+			// Handle completed tasks - check if they were previously synced
+			for (const task of completedTasks) {
+				const taskId = this.syncManager.generateTaskId(task);
+				const syncInfo = this.syncManager.getSyncInfo(taskId);
+
+				if (syncInfo) {
+					// This task was synced before and is now completed
+					try {
+						if (this.settings.completedTaskBehavior === 'delete') {
+							await this.calendarApi.deleteEvent(calendarId, syncInfo.eventId);
+							deleted++;
+						} else {
+							// markComplete - update the event title
+							await this.calendarApi.markEventCompleted(calendarId, syncInfo.eventId, new Date());
+							completed++;
+						}
+						// Remove from sync data either way
+						this.syncManager.removeSync(taskId);
+					} catch (error) {
+						console.error('Failed to handle completed task:', task.title, error);
+						// Still remove from sync data - the event might already be gone
+						this.syncManager.removeSync(taskId);
+					}
+				}
+			}
+
+			// Handle orphaned tasks (deleted from vault entirely)
+			for (const taskId of diff.orphaned) {
+				const syncInfo = this.syncManager.getSyncInfo(taskId);
+				if (syncInfo) {
+					try {
+						await this.calendarApi.deleteEvent(calendarId, syncInfo.eventId);
+						deleted++;
+					} catch (error) {
+						console.error('Failed to delete orphaned event:', taskId, error);
+					}
+					this.syncManager.removeSync(taskId);
+				}
+			}
+
 			// Update sync timestamp and save
 			this.syncManager.updateLastSyncTime();
 			await this.saveSettings();
 
 			// Report results
-			if (!silent || created > 0 || updated > 0 || recreated > 0 || failed > 0) {
+			const hasChanges = created > 0 || updated > 0 || recreated > 0 || completed > 0 || deleted > 0 || failed > 0;
+			if (!silent || hasChanges) {
 				const parts: string[] = [];
 				if (created > 0) parts.push(`${created} created`);
 				if (updated > 0) parts.push(`${updated} updated`);
 				if (recreated > 0) parts.push(`${recreated} recreated`);
+				if (completed > 0) parts.push(`${completed} completed`);
+				if (deleted > 0) parts.push(`${deleted} deleted`);
 				if (unchanged > 0) parts.push(`${unchanged} unchanged`);
 				if (failed > 0) parts.push(`${failed} failed`);
 
@@ -412,6 +461,18 @@ class ChronosSettingTab extends PluginSettingTab {
 							this.plugin.settings.defaultReminderMinutes = nums;
 							await this.plugin.saveSettings();
 						}
+					}));
+
+			new Setting(containerEl)
+				.setName('When task is completed')
+				.setDesc('What to do with calendar events when their tasks are marked complete')
+				.addDropdown(dropdown => dropdown
+					.addOption('markComplete', 'Mark as completed (keep event)')
+					.addOption('delete', 'Delete from calendar')
+					.setValue(this.plugin.settings.completedTaskBehavior)
+					.onChange(async (value: 'delete' | 'markComplete') => {
+						this.plugin.settings.completedTaskBehavior = value;
+						await this.plugin.saveSettings();
 					}));
 
 			// Sync Status Section

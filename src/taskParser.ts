@@ -140,17 +140,17 @@ export class TaskParser {
      * Scan the entire vault for sync-eligible tasks
      * A task is eligible if:
      * - It has a checkbox (- [ ] or - [x])
-     * - It is NOT completed (- [ ])
+     * - It is NOT completed (- [ ]) - unless includeCompleted is true
      * - It has a date (📅)
      * - It does NOT have a no-sync marker (🚫)
      * - Time (⏰) is optional - without it, creates all-day event
      */
-    async scanVault(): Promise<ChronosTask[]> {
+    async scanVault(includeCompleted: boolean = false): Promise<ChronosTask[]> {
         const tasks: ChronosTask[] = [];
         const markdownFiles = this.app.vault.getMarkdownFiles();
 
         for (const file of markdownFiles) {
-            const fileTasks = await this.scanFile(file);
+            const fileTasks = await this.scanFile(file, includeCompleted);
             tasks.push(...fileTasks);
         }
 
@@ -178,7 +178,7 @@ export class TaskParser {
     /**
      * Scan a single file for sync-eligible tasks
      */
-    async scanFile(file: TFile): Promise<ChronosTask[]> {
+    async scanFile(file: TFile, includeCompleted: boolean = false): Promise<ChronosTask[]> {
         const tasks: ChronosTask[] = [];
         const content = await this.app.vault.read(file);
         const lines = content.split('\n');
@@ -187,8 +187,10 @@ export class TaskParser {
             const line = lines[i];
             const parsed = this.parseLine(line);
 
-            // Must be an uncompleted task with a date, and NOT marked as no-sync
-            if (parsed.isTask && !parsed.isCompleted && parsed.date && !parsed.isNoSync) {
+            // Must be a task with a date, NOT marked as no-sync
+            // Include completed tasks only if includeCompleted is true
+            const completionCheck = includeCompleted || !parsed.isCompleted;
+            if (parsed.isTask && completionCheck && parsed.date && !parsed.isNoSync) {
                 const isAllDay = parsed.time === null;
                 const datetime = this.parseDateTime(parsed.date, parsed.time);
 
@@ -203,7 +205,7 @@ export class TaskParser {
                         filePath: file.path,
                         fileName: file.basename,
                         lineNumber: i + 1, // 1-indexed
-                        isCompleted: false,
+                        isCompleted: parsed.isCompleted,
                         tags: parsed.tags,
                     });
                 }
