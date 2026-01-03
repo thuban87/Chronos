@@ -2,6 +2,7 @@ import { App, Modal, Plugin, PluginSettingTab, Setting, Notice, MarkdownView } f
 import { GoogleAuth, TokenData } from './src/googleAuth';
 import { TaskParser, ChronosTask } from './src/taskParser';
 import { DateTimeModal } from './src/dateTimeModal';
+import { GoogleCalendarApi, GoogleCalendar } from './src/googleCalendar';
 
 interface ChronosSettings {
 	googleCalendarId: string;
@@ -29,11 +30,13 @@ export default class ChronosPlugin extends Plugin {
 	tokens?: TokenData;
 	googleAuth: GoogleAuth;
 	taskParser: TaskParser;
+	calendarApi: GoogleCalendarApi;
 
 	async onload() {
 		await this.loadSettings();
 		this.googleAuth = new GoogleAuth();
 		this.taskParser = new TaskParser(this.app);
+		this.calendarApi = new GoogleCalendarApi(() => this.getAccessToken());
 
 		// Add settings tab
 		this.addSettingTab(new ChronosSettingTab(this.app, this));
@@ -70,6 +73,15 @@ export default class ChronosPlugin extends Plugin {
 			}
 		});
 
+		// Add command to sync now
+		this.addCommand({
+			id: 'sync-now',
+			name: 'Sync tasks to Google Calendar now',
+			callback: async () => {
+				await this.syncTasks();
+			}
+		});
+
 		console.log('Chronos plugin loaded');
 	}
 
@@ -80,6 +92,71 @@ export default class ChronosPlugin extends Plugin {
 		new Notice('Scanning vault for tasks...');
 		const tasks = await this.taskParser.scanVault();
 		new TaskListModal(this.app, tasks).open();
+	}
+
+	/**
+	 * Sync all eligible tasks to Google Calendar
+	 */
+	async syncTasks(): Promise<void> {
+		if (!this.isAuthenticated()) {
+			new Notice('Chronos: Please connect to Google Calendar first');
+			return;
+		}
+
+		if (!this.settings.googleCalendarId) {
+			new Notice('Chronos: Please select a calendar in settings');
+			return;
+		}
+
+		new Notice('Chronos: Syncing tasks...');
+
+		try {
+			const tasks = await this.taskParser.scanVault();
+
+			if (tasks.length === 0) {
+				new Notice('Chronos: No tasks to sync');
+				return;
+			}
+
+			const timeZone = this.getTimeZone();
+			let created = 0;
+			let failed = 0;
+
+			for (const task of tasks) {
+				try {
+					await this.calendarApi.createEvent({
+						task,
+						calendarId: this.settings.googleCalendarId,
+						durationMinutes: this.settings.defaultEventDurationMinutes,
+						reminderMinutes: this.settings.defaultReminderMinutes,
+						timeZone,
+					});
+					created++;
+				} catch (error) {
+					console.error('Failed to create event for task:', task.title, error);
+					failed++;
+				}
+			}
+
+			if (failed === 0) {
+				new Notice(`Chronos: Created ${created} event${created === 1 ? '' : 's'}`);
+			} else {
+				new Notice(`Chronos: Created ${created}, failed ${failed}`);
+			}
+		} catch (error) {
+			console.error('Sync failed:', error);
+			new Notice(`Chronos: Sync failed - ${error}`);
+		}
+	}
+
+	/**
+	 * Get the timezone to use for events
+	 */
+	getTimeZone(): string {
+		if (this.settings.timeZone === 'local') {
+			return Intl.DateTimeFormat().resolvedOptions().timeZone;
+		}
+		return this.settings.timeZone;
 	}
 
 	onunload() {
@@ -158,6 +235,16 @@ class ChronosSettingTab extends PluginSettingTab {
 
 		// Sync Settings Section (only show if connected)
 		if (this.plugin.isAuthenticated()) {
+			containerEl.createEl('h3', { text: 'Calendar Selection' });
+
+			// Calendar dropdown
+			const calendarSetting = new Setting(containerEl)
+				.setName('Target calendar')
+				.setDesc('Select which calendar to sync tasks to');
+
+			// Load calendars asynchronously
+			this.loadCalendarDropdown(calendarSetting);
+
 			containerEl.createEl('h3', { text: 'Sync Settings' });
 
 			new Setting(containerEl)
@@ -203,6 +290,48 @@ class ChronosSettingTab extends PluginSettingTab {
 							await this.plugin.saveSettings();
 						}
 					}));
+		}
+	}
+
+	private async loadCalendarDropdown(setting: Setting): Promise<void> {
+		// Add a loading state
+		setting.addDropdown(dropdown => {
+			dropdown.addOption('', 'Loading calendars...');
+			dropdown.setDisabled(true);
+		});
+
+		try {
+			const calendars = await this.plugin.calendarApi.listCalendars();
+
+			// Clear and rebuild the setting
+			setting.clear();
+			setting.setName('Target calendar');
+			setting.setDesc('Select which calendar to sync tasks to');
+
+			setting.addDropdown(dropdown => {
+				dropdown.addOption('', '-- Select a calendar --');
+
+				for (const cal of calendars) {
+					const label = cal.primary ? `${cal.summary} (Primary)` : cal.summary;
+					dropdown.addOption(cal.id, label);
+				}
+
+				dropdown.setValue(this.plugin.settings.googleCalendarId);
+				dropdown.onChange(async (value) => {
+					this.plugin.settings.googleCalendarId = value;
+					await this.plugin.saveSettings();
+				});
+			});
+		} catch (error) {
+			console.error('Failed to load calendars:', error);
+
+			setting.clear();
+			setting.setName('Target calendar');
+			setting.setDesc('Failed to load calendars. Check your connection.');
+
+			setting.addButton(button => button
+				.setButtonText('Retry')
+				.onClick(() => this.display()));
 		}
 	}
 
@@ -333,10 +462,37 @@ class TaskListModal extends Modal {
 			cls: 'chronos-task-count'
 		});
 
+		contentEl.createEl('p', {
+			text: 'Click a task to open it in the editor.',
+			cls: 'chronos-hint'
+		});
+
 		const taskList = contentEl.createDiv({ cls: 'chronos-task-list' });
 
 		for (const task of this.tasks) {
-			const taskDiv = taskList.createDiv({ cls: 'chronos-task-item' });
+			const taskDiv = taskList.createDiv({ cls: 'chronos-task-item chronos-task-clickable' });
+
+			// Make the task clickable to open file at line
+			taskDiv.addEventListener('click', async () => {
+				const file = this.app.vault.getAbstractFileByPath(task.filePath);
+				if (file) {
+					const leaf = this.app.workspace.getLeaf(false);
+					await leaf.openFile(file as any);
+
+					// Jump to the line
+					const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+					if (view) {
+						const editor = view.editor;
+						editor.setCursor({ line: task.lineNumber - 1, ch: 0 });
+						editor.scrollIntoView({
+							from: { line: task.lineNumber - 1, ch: 0 },
+							to: { line: task.lineNumber - 1, ch: 0 }
+						}, true);
+					}
+
+					this.close();
+				}
+			});
 
 			// Task title
 			taskDiv.createEl('div', {
@@ -344,7 +500,7 @@ class TaskListModal extends Modal {
 				cls: 'chronos-task-title'
 			});
 
-			// Task metadata
+			// Task metadata row 1: date/time
 			const meta = taskDiv.createDiv({ cls: 'chronos-task-meta' });
 
 			const dateStr = task.datetime.toLocaleDateString();
@@ -370,9 +526,11 @@ class TaskListModal extends Modal {
 				});
 			}
 
-			meta.createEl('span', {
-				text: `📄 ${task.fileName}`,
-				cls: 'chronos-task-file'
+			// Task metadata row 2: file path and line
+			const fileMeta = taskDiv.createDiv({ cls: 'chronos-task-file-info' });
+			fileMeta.createEl('span', {
+				text: `📄 ${task.filePath}:${task.lineNumber}`,
+				cls: 'chronos-task-filepath'
 			});
 		}
 	}
