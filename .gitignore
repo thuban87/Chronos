@@ -1,0 +1,24 @@
+# Dependencies
+node_modules/
+
+# Build output (deployed to vault, not committed)
+main.js
+
+# IDE
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# npm
+npm-debug.log*
+
+# Documentation
+docs/
+
+# Claude
+.claude/

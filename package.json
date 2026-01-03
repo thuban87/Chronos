@@ -1,0 +1,26 @@
+{
+  "name": "chronos",
+  "version": "0.1.0",
+  "description": "Sync Obsidian tasks with Google Calendar for reliable reminders",
+  "main": "main.js",
+  "scripts": {
+    "dev": "node esbuild.config.mjs",
+    "build": "node esbuild.config.mjs production"
+  },
+  "keywords": [
+    "obsidian",
+    "plugin",
+    "google-calendar",
+    "tasks",
+    "reminders",
+    "sync"
+  ],
+  "author": "Brad Wales",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^20.10.0",
+    "esbuild": "^0.19.11",
+    "obsidian": "latest",
+    "typescript": "^5.3.3"
+  }
+}
