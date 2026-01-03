@@ -1,0 +1,232 @@
+import { App, Plugin, PluginSettingTab, Setting, Notice } from 'obsidian';
+import { GoogleAuth, TokenData } from './src/googleAuth';
+
+interface ChronosSettings {
+	googleCalendarId: string;
+	syncIntervalMinutes: number;
+	defaultReminderMinutes: number[];
+	defaultEventDurationMinutes: number;
+	timeZone: string;
+}
+
+interface ChronosData {
+	settings: ChronosSettings;
+	tokens?: TokenData;
+}
+
+const DEFAULT_SETTINGS: ChronosSettings = {
+	googleCalendarId: '',
+	syncIntervalMinutes: 10,
+	defaultReminderMinutes: [30, 10],
+	defaultEventDurationMinutes: 30,
+	timeZone: 'local'
+};
+
+export default class ChronosPlugin extends Plugin {
+	settings: ChronosSettings;
+	tokens?: TokenData;
+	googleAuth: GoogleAuth;
+
+	async onload() {
+		await this.loadSettings();
+		this.googleAuth = new GoogleAuth();
+
+		// Add settings tab
+		this.addSettingTab(new ChronosSettingTab(this.app, this));
+
+		// Add ribbon icon
+		this.addRibbonIcon('calendar-clock', 'Chronos', () => {
+			if (this.isAuthenticated()) {
+				new Notice(`Chronos: Connected as ${this.tokens?.email || 'Google user'}`);
+			} else {
+				new Notice('Chronos: Not connected to Google Calendar');
+			}
+		});
+
+		console.log('Chronos plugin loaded');
+	}
+
+	onunload() {
+		// Clean up the auth server if it's still running
+		this.googleAuth?.stopServer();
+		console.log('Chronos plugin unloaded');
+	}
+
+	async loadSettings() {
+		const data: ChronosData = await this.loadData() || { settings: DEFAULT_SETTINGS };
+		this.settings = Object.assign({}, DEFAULT_SETTINGS, data.settings);
+		this.tokens = data.tokens;
+	}
+
+	async saveSettings() {
+		const data: ChronosData = {
+			settings: this.settings,
+			tokens: this.tokens,
+		};
+		await this.saveData(data);
+	}
+
+	isAuthenticated(): boolean {
+		return !!this.tokens?.refreshToken;
+	}
+
+	/**
+	 * Get a valid access token, refreshing if necessary
+	 */
+	async getAccessToken(): Promise<string | null> {
+		if (!this.tokens?.refreshToken) {
+			return null;
+		}
+
+		// If token is expired or will expire in next 5 minutes, refresh it
+		const bufferMs = 5 * 60 * 1000;
+		if (Date.now() + bufferMs >= this.tokens.expiresAt) {
+			try {
+				this.tokens = await this.googleAuth.refreshAccessToken(this.tokens.refreshToken);
+				await this.saveSettings();
+			} catch (error) {
+				console.error('Failed to refresh token:', error);
+				// Token refresh failed - user needs to re-authenticate
+				new Notice('Chronos: Session expired. Please reconnect to Google Calendar.');
+				return null;
+			}
+		}
+
+		return this.tokens.accessToken;
+	}
+
+	async clearTokens() {
+		this.tokens = undefined;
+		await this.saveSettings();
+	}
+}
+
+class ChronosSettingTab extends PluginSettingTab {
+	plugin: ChronosPlugin;
+
+	constructor(app: App, plugin: ChronosPlugin) {
+		super(app, plugin);
+		this.plugin = plugin;
+	}
+
+	display(): void {
+		const { containerEl } = this;
+		containerEl.empty();
+
+		containerEl.createEl('h2', { text: 'Chronos Settings' });
+
+		// Google Account Connection Section
+		containerEl.createEl('h3', { text: 'Google Calendar Connection' });
+
+		this.renderConnectionStatus(containerEl);
+
+		// Sync Settings Section (only show if connected)
+		if (this.plugin.isAuthenticated()) {
+			containerEl.createEl('h3', { text: 'Sync Settings' });
+
+			new Setting(containerEl)
+				.setName('Sync interval')
+				.setDesc('How often to sync tasks with Google Calendar (in minutes)')
+				.addText(text => text
+					.setPlaceholder('10')
+					.setValue(String(this.plugin.settings.syncIntervalMinutes))
+					.onChange(async (value) => {
+						const num = parseInt(value);
+						if (!isNaN(num) && num > 0) {
+							this.plugin.settings.syncIntervalMinutes = num;
+							await this.plugin.saveSettings();
+						}
+					}));
+
+			new Setting(containerEl)
+				.setName('Default event duration')
+				.setDesc('Duration in minutes for calendar events (tasks without explicit duration)')
+				.addText(text => text
+					.setPlaceholder('30')
+					.setValue(String(this.plugin.settings.defaultEventDurationMinutes))
+					.onChange(async (value) => {
+						const num = parseInt(value);
+						if (!isNaN(num) && num > 0) {
+							this.plugin.settings.defaultEventDurationMinutes = num;
+							await this.plugin.saveSettings();
+						}
+					}));
+
+			new Setting(containerEl)
+				.setName('Default reminders')
+				.setDesc('Comma-separated minutes before event (e.g., "30, 10" for 30 and 10 min)')
+				.addText(text => text
+					.setPlaceholder('30, 10')
+					.setValue(this.plugin.settings.defaultReminderMinutes.join(', '))
+					.onChange(async (value) => {
+						const nums = value.split(',')
+							.map(s => parseInt(s.trim()))
+							.filter(n => !isNaN(n) && n > 0);
+						if (nums.length > 0) {
+							this.plugin.settings.defaultReminderMinutes = nums;
+							await this.plugin.saveSettings();
+						}
+					}));
+		}
+	}
+
+	private renderConnectionStatus(containerEl: HTMLElement): void {
+		const statusDiv = containerEl.createDiv({ cls: 'chronos-connection-status' });
+
+		if (this.plugin.isAuthenticated()) {
+			// Connected state
+			const email = this.plugin.tokens?.email || 'Google Account';
+			statusDiv.createEl('p', {
+				text: `Connected: ${email}`,
+				cls: 'chronos-status-connected'
+			});
+
+			new Setting(containerEl)
+				.setName('Disconnect')
+				.setDesc('Remove connection to Google Calendar')
+				.addButton(button => button
+					.setButtonText('Disconnect')
+					.setWarning()
+					.onClick(async () => {
+						await this.plugin.clearTokens();
+						new Notice('Disconnected from Google Calendar');
+						this.display(); // Refresh the settings view
+					}));
+		} else {
+			// Disconnected state
+			statusDiv.createEl('p', {
+				text: 'Status: Not connected',
+				cls: 'chronos-status-disconnected'
+			});
+
+			new Setting(containerEl)
+				.setName('Connect to Google Calendar')
+				.setDesc('Authorize Chronos to access your Google Calendar')
+				.addButton(button => button
+					.setButtonText('Connect')
+					.setCta()
+					.onClick(async () => {
+						button.setButtonText('Connecting...');
+						button.setDisabled(true);
+
+						try {
+							await this.plugin.googleAuth.startAuthFlow({
+								onTokensReceived: async (tokens) => {
+									this.plugin.tokens = tokens;
+									await this.plugin.saveSettings();
+									new Notice(`Connected to Google Calendar as ${tokens.email || 'user'}`);
+									this.display(); // Refresh the settings view
+								},
+								onError: (error) => {
+									new Notice(`Connection failed: ${error}`);
+									this.display(); // Refresh to reset button state
+								}
+							});
+						} catch (error) {
+							new Notice(`Failed to start authentication: ${error}`);
+							this.display();
+						}
+					}));
+		}
+	}
+}
