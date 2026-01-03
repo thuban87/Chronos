@@ -3,6 +3,7 @@ import { GoogleAuth, TokenData } from './src/googleAuth';
 import { TaskParser, ChronosTask } from './src/taskParser';
 import { DateTimeModal } from './src/dateTimeModal';
 import { GoogleCalendarApi, GoogleCalendar } from './src/googleCalendar';
+import { SyncManager, ChronosSyncData } from './src/syncManager';
 
 interface ChronosSettings {
 	googleCalendarId: string;
@@ -15,6 +16,7 @@ interface ChronosSettings {
 interface ChronosData {
 	settings: ChronosSettings;
 	tokens?: TokenData;
+	syncData?: ChronosSyncData;
 }
 
 const DEFAULT_SETTINGS: ChronosSettings = {
@@ -31,15 +33,21 @@ export default class ChronosPlugin extends Plugin {
 	googleAuth: GoogleAuth;
 	taskParser: TaskParser;
 	calendarApi: GoogleCalendarApi;
+	syncManager: SyncManager;
+	private syncIntervalId: number | null = null;
 
 	async onload() {
 		await this.loadSettings();
 		this.googleAuth = new GoogleAuth();
 		this.taskParser = new TaskParser(this.app);
 		this.calendarApi = new GoogleCalendarApi(() => this.getAccessToken());
+		// SyncManager is initialized in loadSettings()
 
 		// Add settings tab
 		this.addSettingTab(new ChronosSettingTab(this.app, this));
+
+		// Start automatic sync interval
+		this.startSyncInterval();
 
 		// Add ribbon icon - click to scan tasks
 		this.addRibbonIcon('calendar-clock', 'Chronos: Scan tasks', async () => {
@@ -96,41 +104,46 @@ export default class ChronosPlugin extends Plugin {
 
 	/**
 	 * Sync all eligible tasks to Google Calendar
+	 * Uses SyncManager for duplicate prevention and change detection
 	 */
-	async syncTasks(): Promise<void> {
+	async syncTasks(silent: boolean = false): Promise<void> {
 		if (!this.isAuthenticated()) {
-			new Notice('Chronos: Please connect to Google Calendar first');
+			if (!silent) new Notice('Chronos: Please connect to Google Calendar first');
 			return;
 		}
 
 		if (!this.settings.googleCalendarId) {
-			new Notice('Chronos: Please select a calendar in settings');
+			if (!silent) new Notice('Chronos: Please select a calendar in settings');
 			return;
 		}
 
-		new Notice('Chronos: Syncing tasks...');
+		if (!silent) new Notice('Chronos: Syncing tasks...');
 
 		try {
 			const tasks = await this.taskParser.scanVault();
+			const calendarId = this.settings.googleCalendarId;
 
-			if (tasks.length === 0) {
-				new Notice('Chronos: No tasks to sync');
-				return;
-			}
+			// Compute what needs to be done
+			const diff = this.syncManager.computeSyncDiff(tasks, calendarId);
 
 			const timeZone = this.getTimeZone();
 			let created = 0;
+			let updated = 0;
+			let recreated = 0;
 			let failed = 0;
+			let unchanged = 0;
 
-			for (const task of tasks) {
+			// Create new events
+			for (const task of diff.toCreate) {
 				try {
-					await this.calendarApi.createEvent({
+					const event = await this.calendarApi.createEvent({
 						task,
-						calendarId: this.settings.googleCalendarId,
+						calendarId,
 						durationMinutes: this.settings.defaultEventDurationMinutes,
 						reminderMinutes: this.settings.defaultReminderMinutes,
 						timeZone,
 					});
+					this.syncManager.recordSync(task, event.id, calendarId);
 					created++;
 				} catch (error) {
 					console.error('Failed to create event for task:', task.title, error);
@@ -138,14 +151,80 @@ export default class ChronosPlugin extends Plugin {
 				}
 			}
 
-			if (failed === 0) {
-				new Notice(`Chronos: Created ${created} event${created === 1 ? '' : 's'}`);
-			} else {
-				new Notice(`Chronos: Created ${created}, failed ${failed}`);
+			// Update existing events
+			for (const { task, eventId } of diff.toUpdate) {
+				try {
+					await this.calendarApi.updateEvent(calendarId, eventId, {
+						task,
+						calendarId,
+						durationMinutes: this.settings.defaultEventDurationMinutes,
+						reminderMinutes: this.settings.defaultReminderMinutes,
+						timeZone,
+					});
+					this.syncManager.recordSync(task, eventId, calendarId);
+					updated++;
+				} catch (error) {
+					console.error('Failed to update event for task:', task.title, error);
+					failed++;
+				}
+			}
+
+			// Verify "unchanged" events still exist in Google Calendar
+			// (handles case where user deleted events directly in Google)
+			console.log(`Chronos: Checking ${diff.unchanged.length} unchanged tasks for deleted events`);
+			for (const task of diff.unchanged) {
+				const taskId = this.syncManager.generateTaskId(task);
+				const syncInfo = this.syncManager.getSyncInfo(taskId);
+				console.log(`Chronos: Checking task "${task.title}", taskId=${taskId}, eventId=${syncInfo?.eventId}`);
+
+				if (syncInfo) {
+					const exists = await this.calendarApi.eventExists(calendarId, syncInfo.eventId);
+					console.log(`Chronos: Event exists check result: ${exists}`);
+
+					if (!exists) {
+						// Event was deleted externally - recreate it
+						try {
+							const event = await this.calendarApi.createEvent({
+								task,
+								calendarId,
+								durationMinutes: this.settings.defaultEventDurationMinutes,
+								reminderMinutes: this.settings.defaultReminderMinutes,
+								timeZone,
+							});
+							this.syncManager.recordSync(task, event.id, calendarId);
+							recreated++;
+						} catch (error) {
+							console.error('Failed to recreate event for task:', task.title, error);
+							failed++;
+						}
+					} else {
+						unchanged++;
+					}
+				}
+			}
+
+			// Update sync timestamp and save
+			this.syncManager.updateLastSyncTime();
+			await this.saveSettings();
+
+			// Report results
+			if (!silent || created > 0 || updated > 0 || recreated > 0 || failed > 0) {
+				const parts: string[] = [];
+				if (created > 0) parts.push(`${created} created`);
+				if (updated > 0) parts.push(`${updated} updated`);
+				if (recreated > 0) parts.push(`${recreated} recreated`);
+				if (unchanged > 0) parts.push(`${unchanged} unchanged`);
+				if (failed > 0) parts.push(`${failed} failed`);
+
+				if (parts.length > 0) {
+					new Notice(`Chronos: ${parts.join(', ')}`);
+				} else if (!silent) {
+					new Notice('Chronos: No tasks to sync');
+				}
 			}
 		} catch (error) {
 			console.error('Sync failed:', error);
-			new Notice(`Chronos: Sync failed - ${error}`);
+			if (!silent) new Notice(`Chronos: Sync failed - ${error}`);
 		}
 	}
 
@@ -159,7 +238,48 @@ export default class ChronosPlugin extends Plugin {
 		return this.settings.timeZone;
 	}
 
+	/**
+	 * Start the automatic sync interval
+	 */
+	startSyncInterval(): void {
+		// Don't start if already running
+		if (this.syncIntervalId !== null) return;
+
+		// Don't start if not authenticated or no calendar selected
+		if (!this.isAuthenticated() || !this.settings.googleCalendarId) return;
+
+		const intervalMs = this.settings.syncIntervalMinutes * 60 * 1000;
+
+		this.syncIntervalId = window.setInterval(async () => {
+			// Run sync silently (no notices unless there are changes)
+			await this.syncTasks(true);
+		}, intervalMs);
+
+		console.log(`Chronos: Automatic sync started (every ${this.settings.syncIntervalMinutes} minutes)`);
+	}
+
+	/**
+	 * Stop the automatic sync interval
+	 */
+	stopSyncInterval(): void {
+		if (this.syncIntervalId !== null) {
+			window.clearInterval(this.syncIntervalId);
+			this.syncIntervalId = null;
+			console.log('Chronos: Automatic sync stopped');
+		}
+	}
+
+	/**
+	 * Restart the sync interval (e.g., after settings change)
+	 */
+	restartSyncInterval(): void {
+		this.stopSyncInterval();
+		this.startSyncInterval();
+	}
+
 	onunload() {
+		// Clean up the sync interval
+		this.stopSyncInterval();
 		// Clean up the auth server if it's still running
 		this.googleAuth?.stopServer();
 		console.log('Chronos plugin unloaded');
@@ -169,12 +289,14 @@ export default class ChronosPlugin extends Plugin {
 		const data: ChronosData = await this.loadData() || { settings: DEFAULT_SETTINGS };
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, data.settings);
 		this.tokens = data.tokens;
+		this.syncManager = new SyncManager(data.syncData);
 	}
 
 	async saveSettings() {
 		const data: ChronosData = {
 			settings: this.settings,
 			tokens: this.tokens,
+			syncData: this.syncManager?.getSyncData(),
 		};
 		await this.saveData(data);
 	}
@@ -258,6 +380,7 @@ class ChronosSettingTab extends PluginSettingTab {
 						if (!isNaN(num) && num > 0) {
 							this.plugin.settings.syncIntervalMinutes = num;
 							await this.plugin.saveSettings();
+							this.plugin.restartSyncInterval();
 						}
 					}));
 
@@ -290,6 +413,26 @@ class ChronosSettingTab extends PluginSettingTab {
 							await this.plugin.saveSettings();
 						}
 					}));
+
+			// Sync Status Section
+			containerEl.createEl('h3', { text: 'Sync Status' });
+
+			const lastSync = this.plugin.syncManager.getLastSyncTime();
+			const syncedCount = this.plugin.syncManager.getSyncedTaskCount();
+
+			const statusText = lastSync
+				? `Last sync: ${new Date(lastSync).toLocaleString()}`
+				: 'Never synced';
+
+			new Setting(containerEl)
+				.setName('Sync status')
+				.setDesc(`${statusText} • ${syncedCount} task(s) tracked`)
+				.addButton(button => button
+					.setButtonText('Sync Now')
+					.onClick(async () => {
+						await this.plugin.syncTasks();
+						this.display(); // Refresh to show new sync time
+					}));
 		}
 	}
 
@@ -320,6 +463,8 @@ class ChronosSettingTab extends PluginSettingTab {
 				dropdown.onChange(async (value) => {
 					this.plugin.settings.googleCalendarId = value;
 					await this.plugin.saveSettings();
+					// Start/restart sync interval when calendar is selected
+					this.plugin.restartSyncInterval();
 				});
 			});
 		} catch (error) {

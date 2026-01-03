@@ -141,6 +141,37 @@ export class GoogleCalendarApi {
     }
 
     /**
+     * Check if an event exists and is not cancelled
+     * Google Calendar keeps deleted events with status="cancelled" for a while
+     */
+    async eventExists(calendarId: string, eventId: string): Promise<boolean> {
+        const token = await this.getAccessToken();
+        if (!token) {
+            throw new Error('Not authenticated');
+        }
+
+        try {
+            const response = await requestUrl({
+                url: `${CALENDAR_API_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                },
+            });
+
+            // Check if event is cancelled (deleted in Google Calendar)
+            const eventStatus = response.json?.status;
+            const exists = response.status === 200 && eventStatus !== 'cancelled';
+            console.log(`Chronos: eventExists check for ${eventId}: httpStatus=${response.status}, eventStatus=${eventStatus}, exists=${exists}`);
+            return exists;
+        } catch (error: any) {
+            // requestUrl throws on non-2xx responses
+            console.log(`Chronos: eventExists check for ${eventId}: error/not found`, error?.status || error);
+            return false;
+        }
+    }
+
+    /**
      * Delete a calendar event
      */
     async deleteEvent(calendarId: string, eventId: string): Promise<void> {
