@@ -141,6 +141,61 @@ export class GoogleCalendarApi {
     }
 
     /**
+     * Mark an event as completed by updating its title
+     */
+    async markEventCompleted(calendarId: string, eventId: string, completionTimestamp: Date): Promise<GoogleEvent> {
+        const token = await this.getAccessToken();
+        if (!token) {
+            throw new Error('Not authenticated');
+        }
+
+        // First, get the current event
+        const getResponse = await requestUrl({
+            url: `${CALENDAR_API_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+            },
+        });
+
+        if (getResponse.status !== 200) {
+            throw new Error(`Failed to get event: ${getResponse.status}`);
+        }
+
+        const currentEvent = getResponse.json;
+
+        // Format completion timestamp as MM-DD-YYYY, HH:mm
+        const month = String(completionTimestamp.getMonth() + 1).padStart(2, '0');
+        const day = String(completionTimestamp.getDate()).padStart(2, '0');
+        const year = completionTimestamp.getFullYear();
+        const hours = String(completionTimestamp.getHours()).padStart(2, '0');
+        const minutes = String(completionTimestamp.getMinutes()).padStart(2, '0');
+        const completionStr = `${month}-${day}-${year}, ${hours}:${minutes}`;
+
+        // Update title with completion marker
+        const updatedTitle = `${currentEvent.summary} - Completed ${completionStr}`;
+
+        // Update the event
+        const updateResponse = await requestUrl({
+            url: `${CALENDAR_API_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+            method: 'PATCH',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                summary: updatedTitle,
+            }),
+        });
+
+        if (updateResponse.status !== 200) {
+            throw new Error(`Failed to update event: ${updateResponse.status}`);
+        }
+
+        return updateResponse.json;
+    }
+
+    /**
      * Check if an event exists and is not cancelled
      * Google Calendar keeps deleted events with status="cancelled" for a while
      */
