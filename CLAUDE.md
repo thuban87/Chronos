@@ -33,11 +33,20 @@ Add 🚫 to prevent syncing:
 - [ ] Personal note 📅 2026-01-15 🚫
 ```
 
+### Custom Reminder Times
+Override default reminders with 🔔 followed by minutes (comma-separated):
+```markdown
+- [ ] Important meeting 📅 2026-01-15 ⏰ 14:00 🔔 60,30,10
+- [ ] Quick reminder 📅 2026-01-20 ⏰ 09:00 🔔 5
+```
+Without 🔔, tasks use the default reminder settings (30 and 10 minutes).
+
 ### Key Rules
 - **Date format:** `📅 YYYY-MM-DD` (required for sync)
 - **Time format:** `⏰ HH:mm` (24-hour, optional - omit for all-day events)
 - **Checkbox:** Must be unchecked `- [ ]` to sync
 - **No-sync:** Add `🚫` emoji to exclude from calendar
+- **Custom reminders:** Add `🔔` followed by minutes (e.g., `🔔 30,10`)
 
 Tasks without the 📅 emoji will NOT sync to Google Calendar.
 

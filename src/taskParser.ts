@@ -26,6 +26,8 @@ export interface ChronosTask {
     isCompleted: boolean;
     /** Any tags on the task */
     tags: string[];
+    /** Custom reminder times in minutes (null = use defaults) */
+    reminderMinutes: number[] | null;
 }
 
 /**
@@ -39,6 +41,7 @@ interface ParseResult {
     time: string | null;
     title: string;
     tags: string[];
+    reminderMinutes: number[] | null;
 }
 
 // Regex patterns for Tasks plugin format + Chronos additions
@@ -48,6 +51,8 @@ const TIME_PATTERN = /⏰\s*(\d{1,2}:\d{2})/;
 const NO_SYNC_PATTERN = /🚫/;
 const COMPLETION_PATTERN = /✅\s*\d{4}-\d{2}-\d{2}/;
 const TAG_PATTERN = /#[\w-]+/g;
+// Reminder pattern: 🔔 followed by comma-separated numbers (e.g., 🔔 30,10 or 🔔 15)
+const REMINDER_PATTERN = /🔔\s*([\d,\s]+)/;
 
 // Patterns to strip from title
 const STRIP_PATTERNS = [
@@ -60,6 +65,7 @@ const STRIP_PATTERNS = [
     /➕\s*\d{4}-\d{2}-\d{2}/g,       // Created date
     /🛫\s*\d{4}-\d{2}-\d{2}/g,       // Start date
     /⏳\s*\d{4}-\d{2}-\d{2}/g,       // Scheduled date
+    /🔔\s*[\d,\s]+/g,                // Custom reminder times
 ];
 
 export class TaskParser {
@@ -81,6 +87,7 @@ export class TaskParser {
             time: null,
             title: '',
             tags: [],
+            reminderMinutes: null,
         };
 
         // Check if it's a task (checkbox)
@@ -106,6 +113,19 @@ export class TaskParser {
         if (timeMatch) {
             // Normalize time to HH:mm format
             result.time = this.normalizeTime(timeMatch[1]);
+        }
+
+        // Extract custom reminder times (e.g., 🔔 30,10 or 🔔 15)
+        const reminderMatch = line.match(REMINDER_PATTERN);
+        if (reminderMatch) {
+            const reminderStr = reminderMatch[1];
+            const reminders = reminderStr
+                .split(',')
+                .map(s => parseInt(s.trim(), 10))
+                .filter(n => !isNaN(n) && n > 0);
+            if (reminders.length > 0) {
+                result.reminderMinutes = reminders;
+            }
         }
 
         // Extract tags
@@ -226,6 +246,7 @@ export class TaskParser {
                         lineNumber: i + 1, // 1-indexed
                         isCompleted: parsed.isCompleted,
                         tags: parsed.tags,
+                        reminderMinutes: parsed.reminderMinutes,
                     });
                 }
             }

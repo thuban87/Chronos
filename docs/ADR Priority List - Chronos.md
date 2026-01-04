@@ -1,8 +1,8 @@
 # ADR Priority List - Chronos
 
-**Last Updated:** January 3, 2026
+**Last Updated:** January 4, 2026
 **Version:** 0.1.0
-**Status:** Active Development - Phases 7-9
+**Status:** Active Development - Phase 8 next
 
 ---
 
@@ -195,16 +195,20 @@ Each user creates their own Google Cloud project and provides their own Client I
 
 ---
 
-## Phase 9: Power User Features - PENDING
+## Phase 9: Power User Features - COMPLETE ✓
 
 **Goal:** Transparency and customization for power users.
 
 | Order | Feature | Status | Notes |
 |-------|---------|--------|-------|
-| 46 | Sync log/history | Pending | Modal showing recent sync operations |
-| 47 | Per-task reminder override | Pending | `🔔 15,5` syntax for custom reminder times |
+| 46 | Sync log/history | ✓ Complete | Batched by sync run with collapsible cards, summary counts |
+| 47 | Per-task reminder override | ✓ Complete | `🔔 30,10` syntax + modal UI with toggle and input fields |
 
-**Phase 9 Deliverable:** Users can debug sync issues and customize reminders per-task.
+**Additional polish (Session 7):**
+- Sync history groups operations by batch with collapsible cards
+- Custom reminders UI in date/time modal (toggle + 2 input fields)
+
+**Phase 9 Deliverable:** Users can debug sync issues and customize reminders per-task. ✓
 
 ---
 
