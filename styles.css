@@ -774,3 +774,197 @@
 .chronos-add-mapping-btn:hover {
     background: var(--interactive-accent-hover);
 }
+
+/* Event Routing Behavior */
+.chronos-routing-desc {
+    font-size: 0.9em;
+    color: var(--text-muted);
+    margin-bottom: 1em;
+}
+
+.chronos-reload-warning {
+    background-color: var(--background-secondary);
+    border-left: 3px solid var(--text-warning);
+    padding: 0.75em 1em;
+    margin: 1em 0;
+    border-radius: 4px;
+}
+
+.chronos-reload-warning p {
+    margin: 0;
+}
+
+.chronos-reload-warning p:first-child {
+    font-weight: 500;
+    margin-bottom: 0.5em;
+}
+
+.chronos-reload-instructions {
+    font-size: 0.85em;
+    color: var(--text-muted);
+}
+
+/* Reroute Failure Modal */
+.chronos-reroute-failure-modal {
+    max-width: 500px;
+}
+
+.chronos-reroute-question {
+    font-weight: 500;
+    margin-top: 1em;
+}
+
+.chronos-reroute-list {
+    margin: 1em 0;
+    padding-left: 1.5em;
+    max-height: 200px;
+    overflow-y: auto;
+    background-color: var(--background-secondary);
+    border-radius: 6px;
+    padding-top: 0.75em;
+    padding-bottom: 0.75em;
+}
+
+.chronos-reroute-list li {
+    margin-bottom: 0.25em;
+    color: var(--text-muted);
+}
+
+.chronos-reroute-more {
+    font-style: italic;
+    color: var(--text-muted);
+}
+
+.chronos-reroute-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75em;
+    margin-top: 1.5em;
+    padding-top: 1em;
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+/* Calendar Change Warning Modal */
+.chronos-calendar-change-modal {
+    max-width: 550px;
+}
+
+.chronos-processing-warning {
+    background-color: var(--background-modifier-warning);
+    border: 1px solid var(--text-warning);
+    border-radius: 6px;
+    padding: 0.75em 1em;
+    margin-bottom: 1em;
+}
+
+.chronos-processing-time {
+    font-weight: 600;
+    font-size: 1.05em;
+    margin: 0 0 0.5em 0;
+    color: var(--text-warning);
+}
+
+.chronos-processing-note {
+    margin: 0;
+    font-size: 0.9em;
+    color: var(--text-muted);
+}
+
+.chronos-change-info {
+    margin-bottom: 1em;
+}
+
+.chronos-affected-count {
+    font-weight: 600;
+    color: var(--text-warning);
+}
+
+.chronos-mode-section {
+    margin: 1em 0;
+}
+
+.chronos-current-mode {
+    font-weight: 600;
+    font-size: 1.05em;
+}
+
+.chronos-mode-description {
+    padding: 0.75em;
+    background-color: var(--background-secondary);
+    border-radius: 6px;
+    margin-top: 0.5em;
+}
+
+.chronos-other-modes {
+    margin: 1em 0;
+}
+
+.chronos-other-modes-header {
+    font-size: 0.9em;
+    color: var(--text-muted);
+    margin-bottom: 0.5em;
+}
+
+.chronos-other-modes ul {
+    padding-left: 1.5em;
+    margin: 0;
+    font-size: 0.9em;
+    color: var(--text-muted);
+}
+
+.chronos-other-modes li {
+    margin-bottom: 0.25em;
+}
+
+.chronos-cancel-hint {
+    font-size: 0.9em;
+    font-style: italic;
+    color: var(--text-muted);
+    text-align: center;
+    margin-top: 1em;
+}
+
+.chronos-warning-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75em;
+    margin-top: 1.5em;
+    padding-top: 1em;
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+/* Common button styles */
+.chronos-btn-primary {
+    padding: 8px 20px;
+    border-radius: 4px;
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border: none;
+    cursor: pointer;
+    font-weight: 500;
+    transition: background-color 0.15s ease;
+}
+
+.chronos-btn-primary:hover {
+    background: var(--interactive-accent-hover);
+}
+
+.chronos-btn-primary:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
+}
+
+.chronos-btn-secondary {
+    padding: 8px 20px;
+    border-radius: 4px;
+    background: var(--background-secondary);
+    color: var(--text-normal);
+    border: 1px solid var(--background-modifier-border);
+    cursor: pointer;
+    font-weight: 500;
+    transition: all 0.15s ease;
+}
+
+.chronos-btn-secondary:hover {
+    background: var(--background-modifier-hover);
+}

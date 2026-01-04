@@ -9,7 +9,7 @@ export interface SyncLogEntry {
     /** Batch ID to group operations from the same sync run */
     batchId: string;
     /** Type of operation */
-    type: 'create' | 'update' | 'delete' | 'complete' | 'recreate' | 'error';
+    type: 'create' | 'update' | 'delete' | 'complete' | 'recreate' | 'move' | 'error';
     /** Task title or description */
     taskTitle: string;
     /** Source file path */
@@ -64,6 +64,12 @@ export interface SyncedTaskInfo {
     filePath: string;
     /** Original line number (for reference) */
     lineNumber: number;
+    /** Task title (for reconciliation when line numbers change) */
+    title?: string;
+    /** Task date (for reconciliation when line numbers change) */
+    date?: string;
+    /** Task time (for reconciliation - distinguishes same-title tasks at different times) */
+    time?: string | null;
 }
 
 /**
@@ -98,10 +104,12 @@ export interface SyncDiff {
  * Result of multi-calendar sync diff - includes target calendar per task
  */
 export interface MultiCalendarSyncDiff {
-    /** Tasks that need to be created, with their target calendar */
+    /** Tasks that need to be created (never synced before), with their target calendar */
     toCreate: { task: ChronosTask; targetCalendarId: string }[];
-    /** Tasks that need to be updated, with their calendar */
+    /** Tasks that need to be updated (content changed, same calendar) */
     toUpdate: { task: ChronosTask; eventId: string; calendarId: string }[];
+    /** Tasks that need to be rerouted (calendar changed due to tag or default change) */
+    toReroute: { task: ChronosTask; eventId: string; oldCalendarId: string; newCalendarId: string }[];
     /** Tasks that haven't changed */
     unchanged: { task: ChronosTask; calendarId: string }[];
     /** Task IDs that no longer exist in vault */
@@ -135,11 +143,18 @@ export class SyncManager {
 
     /**
      * Generate a stable Task ID from a task
-     * ID is based on file path + title + date to identify the "concept" of a task
-     * This means the same task keeps its ID even if lines shift
+     * ID is based on file path + title + date + time to identify a task
+     * Using title (not line number) means moving/reorganizing tasks is stable
+     * Trade-off: renaming a task changes the ID, but reconciliation catches it by line number
+     * Note: task.title is already stripped of tags by taskParser, so tag changes don't affect ID
+     * Including time allows multiple same-named events on the same day (e.g., "Focus block" at different times)
      */
     generateTaskId(task: ChronosTask): string {
-        const input = `${task.filePath}|${task.title}|${task.date}`;
+        // Use title instead of line number so moving tasks doesn't change the ID
+        // This ensures reorganizing notes (adding lines above, moving tasks) is stable
+        // Renaming a task changes the ID, but reconciliation matches by line number
+        // Include time to differentiate same-title tasks at different times on the same day
+        const input = `${task.filePath}|${task.title}|${task.date}|${task.time || 'allday'}`;
         return this.simpleHash(input);
     }
 
@@ -223,6 +238,7 @@ export class SyncManager {
         const diff: MultiCalendarSyncDiff = {
             toCreate: [],
             toUpdate: [],
+            toReroute: [],
             unchanged: [],
             orphaned: [],
             warnings: [],
@@ -230,11 +246,26 @@ export class SyncManager {
 
         // Track which synced task IDs we've seen
         const seenTaskIds = new Set<string>();
+        // Track task info for duplicate detection
+        const taskIdToInfo = new Map<string, { title: string; filePath: string; lineNumber: number }>();
 
         for (const task of currentTasks) {
             const taskId = this.generateTaskId(task);
             const contentHash = this.generateContentHash(task);
+
+            // Check for duplicate task IDs (same title + date + file)
+            if (seenTaskIds.has(taskId)) {
+                const existingInfo = taskIdToInfo.get(taskId);
+                diff.warnings.push(
+                    `⚠️ Duplicate task detected: "${task.title}" on ${task.date} in ${task.filePath}` +
+                    (existingInfo ? ` (conflicts with line ${existingInfo.lineNumber})` : '') +
+                    `. Only one will sync correctly. Consider renaming one of the tasks.`
+                );
+                continue; // Skip the duplicate
+            }
+
             seenTaskIds.add(taskId);
+            taskIdToInfo.set(taskId, { title: task.title, filePath: task.filePath, lineNumber: task.lineNumber });
 
             // Get target calendar for this specific task
             const { calendarId: targetCalendarId, warning } = getTargetCalendar(task);
@@ -248,9 +279,14 @@ export class SyncManager {
                 // Never synced before
                 diff.toCreate.push({ task, targetCalendarId });
             } else if (existing.calendarId !== targetCalendarId) {
-                // Target calendar changed (due to tag change) - treat as new
-                // The old event becomes "dormant" in its original calendar
-                diff.toCreate.push({ task, targetCalendarId });
+                // Target calendar changed (due to tag change or default calendar change)
+                // This needs to be rerouted based on the user's routing behavior setting
+                diff.toReroute.push({
+                    task,
+                    eventId: existing.eventId,
+                    oldCalendarId: existing.calendarId,
+                    newCalendarId: targetCalendarId
+                });
             } else if (existing.contentHash !== contentHash) {
                 // Content has changed - need to update in same calendar
                 diff.toUpdate.push({ task, eventId: existing.eventId, calendarId: existing.calendarId });
@@ -261,9 +297,166 @@ export class SyncManager {
         }
 
         // Find orphaned entries (synced tasks no longer in vault)
+        const potentialOrphans: string[] = [];
         for (const taskId of Object.keys(this.syncData.syncedTasks)) {
             if (!seenTaskIds.has(taskId)) {
-                diff.orphaned.push(taskId);
+                potentialOrphans.push(taskId);
+            }
+        }
+
+        // FIRST RECONCILIATION PASS: Match by filePath + lineNumber ONLY
+        // This handles: renames, date changes, time changes (anything edited on the same line)
+        // With title-based IDs, editing any ID component creates a "new" task and "orphans" the old one
+        // We reconcile them by matching on line number to convert to an UPDATE
+        const reconciledOrphans = new Set<string>();
+        const reconciledNewTasks = new Set<number>(); // indices into diff.toCreate
+
+        for (const orphanId of potentialOrphans) {
+            const orphanInfo = this.syncData.syncedTasks[orphanId];
+
+            // Skip if orphan doesn't have lineNumber stored (old entries before this feature)
+            if (!orphanInfo.lineNumber) {
+                continue;
+            }
+
+            // Try to find a matching new task in the same file on the same line
+            for (let i = 0; i < diff.toCreate.length; i++) {
+                if (reconciledNewTasks.has(i)) continue; // Already matched
+
+                const newTask = diff.toCreate[i].task;
+                const targetCalendarId = diff.toCreate[i].targetCalendarId;
+
+                // Match by: same file, same line number (date/time/title can all change)
+                // This catches: renames, rescheduling, time changes - anything edited in place
+                if (newTask.filePath === orphanInfo.filePath &&
+                    newTask.lineNumber === orphanInfo.lineNumber) {
+                    // Found a match! This task was edited in place, not deleted+created
+                    reconciledOrphans.add(orphanId);
+                    reconciledNewTasks.add(i);
+
+                    // Generate new task ID (based on new title/date/time) and migrate the sync entry
+                    const newTaskId = this.generateTaskId(newTask);
+                    const newContentHash = this.generateContentHash(newTask);
+
+                    // Migrate: copy sync info to new ID, delete old ID
+                    // Update all stored info to match the new task
+                    this.syncData.syncedTasks[newTaskId] = {
+                        ...orphanInfo,
+                        title: newTask.title,
+                        date: newTask.date,
+                        time: newTask.time,
+                    };
+                    delete this.syncData.syncedTasks[orphanId];
+
+                    // Determine what action to take based on calendar and content changes
+                    if (orphanInfo.calendarId !== targetCalendarId) {
+                        // Calendar changed - needs rerouting
+                        diff.toReroute.push({
+                            task: newTask,
+                            eventId: orphanInfo.eventId,
+                            oldCalendarId: orphanInfo.calendarId,
+                            newCalendarId: targetCalendarId
+                        });
+                    } else if (orphanInfo.contentHash !== newContentHash) {
+                        // Content changed - needs update
+                        diff.toUpdate.push({
+                            task: newTask,
+                            eventId: orphanInfo.eventId,
+                            calendarId: orphanInfo.calendarId
+                        });
+                    } else {
+                        // Content hash is the same - no actual changes needed
+                        diff.unchanged.push({
+                            task: newTask,
+                            calendarId: orphanInfo.calendarId
+                        });
+                    }
+
+                    break; // Found match, move to next orphan
+                }
+            }
+        }
+
+        // SECOND RECONCILIATION PASS: Match by title+date+time (catches cross-file moves)
+        // Only process orphans that weren't matched in the first pass
+        for (const orphanId of potentialOrphans) {
+            if (reconciledOrphans.has(orphanId)) continue; // Already matched
+
+            const orphanInfo = this.syncData.syncedTasks[orphanId];
+
+            // Skip if orphan doesn't have title/date stored
+            if (!orphanInfo.title || !orphanInfo.date) {
+                continue;
+            }
+
+            // Try to find a matching new task with same title+date+time (any file)
+            for (let i = 0; i < diff.toCreate.length; i++) {
+                if (reconciledNewTasks.has(i)) continue; // Already matched
+
+                const newTask = diff.toCreate[i].task;
+                const targetCalendarId = diff.toCreate[i].targetCalendarId;
+
+                // Match by: same title, same date, same time (file can be different - cross-file move)
+                // Time comparison: both null (all-day) or both equal
+                const timeMatches = (newTask.time === orphanInfo.time) ||
+                    (newTask.time === null && orphanInfo.time === null);
+
+                if (newTask.title === orphanInfo.title &&
+                    newTask.date === orphanInfo.date &&
+                    timeMatches) {
+
+                    // Found a match! This task moved to a different file
+                    reconciledOrphans.add(orphanId);
+                    reconciledNewTasks.add(i);
+
+                    // Generate new task ID and migrate the sync entry
+                    const newTaskId = this.generateTaskId(newTask);
+                    const newContentHash = this.generateContentHash(newTask);
+
+                    // Migrate: copy sync info to new ID with updated file/line info
+                    this.syncData.syncedTasks[newTaskId] = {
+                        ...orphanInfo,
+                        filePath: newTask.filePath,
+                        lineNumber: newTask.lineNumber,
+                    };
+                    delete this.syncData.syncedTasks[orphanId];
+
+                    // Determine what action to take based on calendar and content changes
+                    if (orphanInfo.calendarId !== targetCalendarId) {
+                        // Calendar changed - needs rerouting
+                        diff.toReroute.push({
+                            task: newTask,
+                            eventId: orphanInfo.eventId,
+                            oldCalendarId: orphanInfo.calendarId,
+                            newCalendarId: targetCalendarId
+                        });
+                    } else if (orphanInfo.contentHash !== newContentHash) {
+                        // Content changed - needs update
+                        diff.toUpdate.push({
+                            task: newTask,
+                            eventId: orphanInfo.eventId,
+                            calendarId: orphanInfo.calendarId
+                        });
+                    } else {
+                        // No content changes - just moved files
+                        diff.unchanged.push({
+                            task: newTask,
+                            calendarId: orphanInfo.calendarId
+                        });
+                    }
+
+                    break; // Found match, move to next orphan
+                }
+            }
+        }
+
+        // Remove reconciled items from their original lists
+        diff.toCreate = diff.toCreate.filter((_, i) => !reconciledNewTasks.has(i));
+
+        // Add remaining (unreconciled) orphans to the orphaned list
+        for (const orphanId of potentialOrphans) {
+            if (!reconciledOrphans.has(orphanId)) {
+                diff.orphaned.push(orphanId);
             }
         }
 
@@ -284,6 +477,9 @@ export class SyncManager {
             lastSyncedAt: new Date().toISOString(),
             filePath: task.filePath,
             lineNumber: task.lineNumber,
+            title: task.title,
+            date: task.date,
+            time: task.time,
         };
     }
 
@@ -299,6 +495,18 @@ export class SyncManager {
      */
     getSyncInfo(taskId: string): SyncedTaskInfo | undefined {
         return this.syncData.syncedTasks[taskId];
+    }
+
+    /**
+     * Update the stored line number for a synced task
+     * Used when a task moves within a file but is otherwise unchanged
+     * This ensures future renames can be reconciled correctly
+     */
+    updateSyncLineNumber(taskId: string, newLineNumber: number): void {
+        const syncInfo = this.syncData.syncedTasks[taskId];
+        if (syncInfo) {
+            syncInfo.lineNumber = newLineNumber;
+        }
     }
 
     /**
