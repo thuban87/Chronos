@@ -168,16 +168,16 @@ Each user creates their own Google Cloud project and provides their own Client I
 
 ---
 
-## Phase 7: Agenda & Timezone - PENDING
+## Phase 7: Agenda & Timezone - COMPLETE ✓
 
 **Goal:** Better time display and daily overview.
 
 | Order | Feature | Status | Notes |
 |-------|---------|--------|-------|
-| 41 | Daily agenda sidebar | Pending | Show today's synced events in Obsidian sidebar |
-| 42 | Time zone setting | Pending | Dropdown for explicit zone vs system local |
+| 41 | Daily agenda sidebar | ✓ Complete | Shows all Google Calendar events (not just Chronos-synced), day navigation, event colors |
+| 42 | Time zone setting | ✓ Complete | Dropdown with System Local + 35 common IANA timezones |
 
-**Phase 7 Deliverable:** Users can see today's events at a glance and configure timezone explicitly.
+**Phase 7 Deliverable:** Users can see today's events at a glance and configure timezone explicitly. ✓
 
 ---
 
