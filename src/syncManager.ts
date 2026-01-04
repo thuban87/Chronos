@@ -95,6 +95,22 @@ export interface SyncDiff {
 }
 
 /**
+ * Result of multi-calendar sync diff - includes target calendar per task
+ */
+export interface MultiCalendarSyncDiff {
+    /** Tasks that need to be created, with their target calendar */
+    toCreate: { task: ChronosTask; targetCalendarId: string }[];
+    /** Tasks that need to be updated, with their calendar */
+    toUpdate: { task: ChronosTask; eventId: string; calendarId: string }[];
+    /** Tasks that haven't changed */
+    unchanged: { task: ChronosTask; calendarId: string }[];
+    /** Task IDs that no longer exist in vault */
+    orphaned: string[];
+    /** Warnings generated during diff computation */
+    warnings: string[];
+}
+
+/**
  * Manages sync state between Obsidian tasks and Google Calendar events
  */
 export class SyncManager {
@@ -182,6 +198,65 @@ export class SyncManager {
             } else {
                 // No changes
                 diff.unchanged.push(task);
+            }
+        }
+
+        // Find orphaned entries (synced tasks no longer in vault)
+        for (const taskId of Object.keys(this.syncData.syncedTasks)) {
+            if (!seenTaskIds.has(taskId)) {
+                diff.orphaned.push(taskId);
+            }
+        }
+
+        return diff;
+    }
+
+    /**
+     * Compare current tasks with synced state, supporting per-task calendar routing
+     * @param currentTasks All uncompleted tasks
+     * @param getTargetCalendar Function that returns target calendar and optional warning for a task
+     */
+    computeMultiCalendarSyncDiff(
+        currentTasks: ChronosTask[],
+        getTargetCalendar: (task: ChronosTask) => { calendarId: string; warning?: string }
+    ): MultiCalendarSyncDiff {
+        const diff: MultiCalendarSyncDiff = {
+            toCreate: [],
+            toUpdate: [],
+            unchanged: [],
+            orphaned: [],
+            warnings: [],
+        };
+
+        // Track which synced task IDs we've seen
+        const seenTaskIds = new Set<string>();
+
+        for (const task of currentTasks) {
+            const taskId = this.generateTaskId(task);
+            const contentHash = this.generateContentHash(task);
+            seenTaskIds.add(taskId);
+
+            // Get target calendar for this specific task
+            const { calendarId: targetCalendarId, warning } = getTargetCalendar(task);
+            if (warning) {
+                diff.warnings.push(warning);
+            }
+
+            const existing = this.syncData.syncedTasks[taskId];
+
+            if (!existing) {
+                // Never synced before
+                diff.toCreate.push({ task, targetCalendarId });
+            } else if (existing.calendarId !== targetCalendarId) {
+                // Target calendar changed (due to tag change) - treat as new
+                // The old event becomes "dormant" in its original calendar
+                diff.toCreate.push({ task, targetCalendarId });
+            } else if (existing.contentHash !== contentHash) {
+                // Content has changed - need to update in same calendar
+                diff.toUpdate.push({ task, eventId: existing.eventId, calendarId: existing.calendarId });
+            } else {
+                // No changes
+                diff.unchanged.push({ task, calendarId: existing.calendarId });
             }
         }
 

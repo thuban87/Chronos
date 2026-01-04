@@ -2,7 +2,7 @@
 
 **Last Updated:** January 4, 2026
 **Version:** 0.1.0
-**Status:** Active Development - Phase 8 next
+**Status:** Active Development - Phases 7-9 Complete
 
 ---
 
@@ -181,17 +181,22 @@ Each user creates their own Google Cloud project and provides their own Client I
 
 ---
 
-## Phase 8: Multi-Calendar Support - PENDING
+## Phase 8: Multi-Calendar Support - COMPLETE ✓
 
 **Goal:** Route tasks to different calendars by tag.
 
 | Order | Feature | Status | Notes |
 |-------|---------|--------|-------|
-| 43 | Tag-to-calendar mapping UI | Pending | Settings UI for mapping tags to calendars |
-| 44 | Multi-calendar sync logic | Pending | Pick target calendar based on task tags |
-| 45 | Default calendar fallback | Pending | Use default when no tag matches |
+| 43 | Tag-to-calendar mapping UI | ✓ Complete | Settings UI for adding/removing tag→calendar mappings |
+| 44 | Multi-calendar sync logic | ✓ Complete | Each task routes to calendar based on its tags |
+| 45 | Default calendar fallback | ✓ Complete | Tasks with no/unmapped tags use default calendar |
 
-**Phase 8 Deliverable:** Tasks tagged #work go to Work calendar, #personal to Personal, etc.
+**Additional features:**
+- Multiple mapped tags warning (uses default calendar with notice)
+- Tag changes create new event in new calendar (old event becomes dormant)
+- Completed/orphaned tasks handled with their stored calendar ID
+
+**Phase 8 Deliverable:** Tasks tagged #work go to Work calendar, #personal to Personal, etc. ✓
 
 ---
 

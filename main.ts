@@ -3,7 +3,7 @@ import { GoogleAuth, TokenData, GoogleAuthCredentials } from './src/googleAuth';
 import { TaskParser, ChronosTask } from './src/taskParser';
 import { DateTimeModal } from './src/dateTimeModal';
 import { GoogleCalendarApi, GoogleCalendar, GoogleEvent } from './src/googleCalendar';
-import { SyncManager, ChronosSyncData, PendingOperation, SyncLogEntry } from './src/syncManager';
+import { SyncManager, ChronosSyncData, PendingOperation, SyncLogEntry, MultiCalendarSyncDiff } from './src/syncManager';
 import { AgendaView, AGENDA_VIEW_TYPE, AgendaViewDeps } from './src/agendaView';
 
 interface ChronosSettings {
@@ -16,6 +16,7 @@ interface ChronosSettings {
 	timeZone: string;
 	completedTaskBehavior: 'delete' | 'markComplete';
 	agendaRefreshIntervalMinutes: number;
+	tagCalendarMappings: Record<string, string>;  // tag → calendarId
 }
 
 interface ChronosData {
@@ -33,7 +34,8 @@ const DEFAULT_SETTINGS: ChronosSettings = {
 	defaultEventDurationMinutes: 30,
 	timeZone: 'local',
 	completedTaskBehavior: 'markComplete',
-	agendaRefreshIntervalMinutes: 10
+	agendaRefreshIntervalMinutes: 10,
+	tagCalendarMappings: {}
 };
 
 export default class ChronosPlugin extends Plugin {
@@ -234,14 +236,21 @@ export default class ChronosPlugin extends Plugin {
 
 			// Scan for ALL tasks including completed ones
 			const allTasks = await this.taskParser.scanVault(true);
-			const calendarId = this.settings.googleCalendarId;
 
 			// Separate uncompleted and completed tasks
 			const uncompletedTasks = allTasks.filter(t => !t.isCompleted);
 			const completedTasks = allTasks.filter(t => t.isCompleted);
 
-			// Compute what needs to be done for uncompleted tasks
-			const diff = this.syncManager.computeSyncDiff(uncompletedTasks, calendarId);
+			// Compute what needs to be done using multi-calendar routing
+			const diff = this.syncManager.computeMultiCalendarSyncDiff(
+				uncompletedTasks,
+				(task) => this.getTargetCalendarForTask(task)
+			);
+
+			// Show warnings for tasks with multiple mapped tags
+			for (const warning of diff.warnings) {
+				new Notice(warning);
+			}
 
 			const timeZone = this.getTimeZone();
 			let created = 0;
@@ -252,19 +261,19 @@ export default class ChronosPlugin extends Plugin {
 			let failed = 0;
 			let unchanged = 0;
 
-			// Create new events
-			for (const task of diff.toCreate) {
+			// Create new events (each task has its own target calendar)
+			for (const { task, targetCalendarId } of diff.toCreate) {
 				try {
 					// Use task-specific reminders if set, otherwise use defaults
 					const reminderMinutes = task.reminderMinutes || this.settings.defaultReminderMinutes;
 					const event = await this.calendarApi.createEvent({
 						task,
-						calendarId,
+						calendarId: targetCalendarId,
 						durationMinutes: this.settings.defaultEventDurationMinutes,
 						reminderMinutes,
 						timeZone,
 					});
-					this.syncManager.recordSync(task, event.id, calendarId);
+					this.syncManager.recordSync(task, event.id, targetCalendarId);
 					this.syncManager.logOperation({
 						type: 'create',
 						taskTitle: task.title,
@@ -296,15 +305,15 @@ export default class ChronosPlugin extends Plugin {
 								rawText: task.rawText,
 								isAllDay: task.isAllDay,
 							},
-							calendarId,
+							calendarId: targetCalendarId,
 						});
 					}
 					failed++;
 				}
 			}
 
-			// Update existing events
-			for (const { task, eventId } of diff.toUpdate) {
+			// Update existing events (each task has its own calendar)
+			for (const { task, eventId, calendarId } of diff.toUpdate) {
 				try {
 					// Use task-specific reminders if set, otherwise use defaults
 					const reminderMinutes = task.reminderMinutes || this.settings.defaultReminderMinutes;
@@ -356,7 +365,7 @@ export default class ChronosPlugin extends Plugin {
 			}
 
 			// Verify "unchanged" events still exist in Google Calendar
-			for (const task of diff.unchanged) {
+			for (const { task, calendarId } of diff.unchanged) {
 				const taskId = this.syncManager.generateTaskId(task);
 				const syncInfo = this.syncManager.getSyncInfo(taskId);
 
@@ -402,16 +411,19 @@ export default class ChronosPlugin extends Plugin {
 				}
 			}
 
-			// Handle completed tasks - check if they were previously synced
+			// Handle completed tasks - use their stored calendar ID
 			for (const task of completedTasks) {
 				const taskId = this.syncManager.generateTaskId(task);
 				const syncInfo = this.syncManager.getSyncInfo(taskId);
 
 				if (syncInfo) {
+					// Use the calendar where this task was originally synced
+					const taskCalendarId = syncInfo.calendarId;
+
 					// This task was synced before and is now completed
 					try {
 						if (this.settings.completedTaskBehavior === 'delete') {
-							await this.calendarApi.deleteEvent(calendarId, syncInfo.eventId);
+							await this.calendarApi.deleteEvent(taskCalendarId, syncInfo.eventId);
 							this.syncManager.logOperation({
 								type: 'delete',
 								taskTitle: task.title,
@@ -422,7 +434,7 @@ export default class ChronosPlugin extends Plugin {
 							deleted++;
 						} else {
 							// markComplete - update the event title
-							await this.calendarApi.markEventCompleted(calendarId, syncInfo.eventId, new Date());
+							await this.calendarApi.markEventCompleted(taskCalendarId, syncInfo.eventId, new Date());
 							this.syncManager.logOperation({
 								type: 'complete',
 								taskTitle: task.title,
@@ -450,7 +462,7 @@ export default class ChronosPlugin extends Plugin {
 								type: opType,
 								taskId,
 								eventId: syncInfo.eventId,
-								calendarId,
+								calendarId: taskCalendarId,
 							});
 						} else {
 							// Non-retryable error - remove from sync data anyway
@@ -460,12 +472,13 @@ export default class ChronosPlugin extends Plugin {
 				}
 			}
 
-			// Handle orphaned tasks (deleted from vault entirely)
+			// Handle orphaned tasks - use their stored calendar ID
 			for (const taskId of diff.orphaned) {
 				const syncInfo = this.syncManager.getSyncInfo(taskId);
 				if (syncInfo) {
+					const taskCalendarId = syncInfo.calendarId;
 					try {
-						await this.calendarApi.deleteEvent(calendarId, syncInfo.eventId);
+						await this.calendarApi.deleteEvent(taskCalendarId, syncInfo.eventId);
 						this.syncManager.logOperation({
 							type: 'delete',
 							taskTitle: `(orphaned task)`,
@@ -490,7 +503,7 @@ export default class ChronosPlugin extends Plugin {
 								type: 'delete',
 								taskId,
 								eventId: syncInfo.eventId,
-								calendarId,
+								calendarId: taskCalendarId,
 							});
 						} else {
 							// Non-retryable - just remove from sync data
@@ -549,6 +562,54 @@ export default class ChronosPlugin extends Plugin {
 			return Intl.DateTimeFormat().resolvedOptions().timeZone;
 		}
 		return this.settings.timeZone;
+	}
+
+	/**
+	 * Determine the target calendar for a task based on its tags and mappings
+	 * Returns the calendar ID and optionally a warning message
+	 */
+	getTargetCalendarForTask(task: ChronosTask): { calendarId: string; warning?: string } {
+		const mappings = this.settings.tagCalendarMappings;
+		const defaultCalendar = this.settings.googleCalendarId;
+
+		// If no mappings configured, use default
+		if (Object.keys(mappings).length === 0) {
+			return { calendarId: defaultCalendar };
+		}
+
+		// Find which of the task's tags have mappings
+		const matchedTags: string[] = [];
+		const matchedCalendars: string[] = [];
+
+		for (const tag of task.tags) {
+			// Normalize tag (remove # if present for comparison)
+			const normalizedTag = tag.startsWith('#') ? tag : `#${tag}`;
+
+			// Check both with and without # prefix
+			if (mappings[normalizedTag]) {
+				matchedTags.push(normalizedTag);
+				matchedCalendars.push(mappings[normalizedTag]);
+			} else if (mappings[tag]) {
+				matchedTags.push(tag);
+				matchedCalendars.push(mappings[tag]);
+			}
+		}
+
+		// No mapped tags → use default
+		if (matchedTags.length === 0) {
+			return { calendarId: defaultCalendar };
+		}
+
+		// One mapped tag → use that calendar
+		if (matchedTags.length === 1) {
+			return { calendarId: matchedCalendars[0] };
+		}
+
+		// Multiple mapped tags → warning + use default
+		return {
+			calendarId: defaultCalendar,
+			warning: `Task "${task.title}" has multiple mapped tags (${matchedTags.join(', ')}). Using default calendar.`
+		};
 	}
 
 	/**
@@ -843,6 +904,8 @@ export default class ChronosPlugin extends Plugin {
 
 class ChronosSettingTab extends PluginSettingTab {
 	plugin: ChronosPlugin;
+	calendars: GoogleCalendar[] = [];
+	mappingsContainer: HTMLElement | null = null;
 
 	constructor(app: App, plugin: ChronosPlugin) {
 		super(app, plugin);
@@ -870,13 +933,23 @@ class ChronosSettingTab extends PluginSettingTab {
 		if (this.plugin.isAuthenticated()) {
 			containerEl.createEl('h3', { text: 'Calendar Selection' });
 
-			// Calendar dropdown
+			// Default calendar dropdown
 			const calendarSetting = new Setting(containerEl)
-				.setName('Target calendar')
-				.setDesc('Select which calendar to sync tasks to');
+				.setName('Default calendar')
+				.setDesc('Tasks without mapped tags will sync to this calendar');
 
 			// Load calendars asynchronously
 			this.loadCalendarDropdown(calendarSetting);
+
+			// Tag-to-Calendar Mappings section
+			containerEl.createEl('h3', { text: 'Tag-to-Calendar Mappings' });
+
+			const mappingsDesc = containerEl.createEl('p', { cls: 'chronos-mappings-desc' });
+			mappingsDesc.setText('Route tasks to specific calendars based on their tags. Tasks with unmapped or no tags go to the default calendar above.');
+
+			// Render mappings container (will be re-rendered after calendars load)
+			this.mappingsContainer = containerEl.createDiv({ cls: 'chronos-mappings-container' });
+			this.renderTagMappings(this.mappingsContainer);
 
 			containerEl.createEl('h3', { text: 'Sync Settings' });
 
@@ -1062,11 +1135,13 @@ class ChronosSettingTab extends PluginSettingTab {
 
 		try {
 			const calendars = await this.plugin.calendarApi.listCalendars();
+			// Store calendars for use in tag mappings
+			this.calendars = calendars;
 
 			// Clear and rebuild the setting
 			setting.clear();
-			setting.setName('Target calendar');
-			setting.setDesc('Select which calendar to sync tasks to');
+			setting.setName('Default calendar');
+			setting.setDesc('Tasks without mapped tags will sync to this calendar');
 
 			setting.addDropdown(dropdown => {
 				dropdown.addOption('', '-- Select a calendar --');
@@ -1086,17 +1161,147 @@ class ChronosSettingTab extends PluginSettingTab {
 					this.plugin.refreshAgendaViews(true);
 				});
 			});
+
+			// Re-render tag mappings now that calendars are loaded
+			if (this.mappingsContainer) {
+				this.renderTagMappings(this.mappingsContainer);
+			}
 		} catch (error) {
 			console.error('Failed to load calendars:', error);
+			this.calendars = [];
 
 			setting.clear();
-			setting.setName('Target calendar');
+			setting.setName('Default calendar');
 			setting.setDesc('Failed to load calendars. Check your connection.');
 
 			setting.addButton(button => button
 				.setButtonText('Retry')
 				.onClick(() => this.display()));
 		}
+	}
+
+	/**
+	 * Render the tag-to-calendar mappings UI
+	 */
+	private renderTagMappings(container: HTMLElement): void {
+		container.empty();
+
+		const mappings = this.plugin.settings.tagCalendarMappings;
+		const mappingEntries = Object.entries(mappings);
+
+		if (mappingEntries.length === 0) {
+			container.createEl('p', {
+				text: 'No tag mappings configured. Add a mapping below.',
+				cls: 'chronos-no-mappings'
+			});
+		} else {
+			// Render each mapping
+			const mappingsList = container.createDiv({ cls: 'chronos-mappings-list' });
+
+			for (const [tag, calendarId] of mappingEntries) {
+				const mappingRow = mappingsList.createDiv({ cls: 'chronos-mapping-row' });
+
+				// Tag display
+				mappingRow.createSpan({
+					text: tag,
+					cls: 'chronos-mapping-tag'
+				});
+
+				// Arrow
+				mappingRow.createSpan({
+					text: '→',
+					cls: 'chronos-mapping-arrow'
+				});
+
+				// Calendar name
+				const calendar = this.calendars.find(c => c.id === calendarId);
+				const calendarName = calendar?.summary || 'Unknown calendar';
+				mappingRow.createSpan({
+					text: calendarName,
+					cls: 'chronos-mapping-calendar'
+				});
+
+				// Delete button
+				const deleteBtn = mappingRow.createEl('button', {
+					text: '×',
+					cls: 'chronos-mapping-delete'
+				});
+				deleteBtn.addEventListener('click', async () => {
+					delete this.plugin.settings.tagCalendarMappings[tag];
+					await this.plugin.saveSettings();
+					this.renderTagMappings(container);
+				});
+			}
+		}
+
+		// Add new mapping section
+		const addSection = container.createDiv({ cls: 'chronos-add-mapping' });
+
+		const tagInput = addSection.createEl('input', {
+			type: 'text',
+			placeholder: '#work',
+			cls: 'chronos-tag-input'
+		});
+
+		addSection.createSpan({
+			text: '→',
+			cls: 'chronos-mapping-arrow'
+		});
+
+		const calendarSelect = addSection.createEl('select', {
+			cls: 'chronos-calendar-select'
+		});
+
+		// Add empty option
+		const emptyOption = calendarSelect.createEl('option', {
+			text: 'Select calendar...',
+			value: ''
+		});
+
+		// Add calendar options
+		for (const cal of this.calendars) {
+			const option = calendarSelect.createEl('option', {
+				text: cal.primary ? `${cal.summary} (Primary)` : cal.summary,
+				value: cal.id
+			});
+		}
+
+		const addBtn = addSection.createEl('button', {
+			text: 'Add',
+			cls: 'chronos-add-mapping-btn'
+		});
+
+		addBtn.addEventListener('click', async () => {
+			let tag = tagInput.value.trim();
+			const calendarId = calendarSelect.value;
+
+			if (!tag || !calendarId) {
+				new Notice('Please enter a tag and select a calendar');
+				return;
+			}
+
+			// Normalize tag to include # if not present
+			if (!tag.startsWith('#')) {
+				tag = '#' + tag;
+			}
+
+			// Check if tag already exists
+			if (this.plugin.settings.tagCalendarMappings[tag]) {
+				new Notice(`Tag "${tag}" is already mapped. Delete the existing mapping first.`);
+				return;
+			}
+
+			// Add the mapping
+			this.plugin.settings.tagCalendarMappings[tag] = calendarId;
+			await this.plugin.saveSettings();
+
+			// Reset inputs
+			tagInput.value = '';
+			calendarSelect.value = '';
+
+			// Re-render
+			this.renderTagMappings(container);
+		});
 	}
 
 	private renderCredentialsSection(containerEl: HTMLElement): void {

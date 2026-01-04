@@ -1,9 +1,61 @@
 # Chronos Handoff Log
 
 **Last Updated:** January 4, 2026
-**Current Phase:** Active Development - Phase 8 remaining
+**Current Phase:** Active Development - Phases 7-9 Complete
 **Current Branch:** feature/phase-9-qol-upgrades-2
 **Version:** 0.1.0
+
+---
+
+## Session: January 4, 2026 (Session 8) - Phase 8 Complete: Multi-Calendar Support
+
+### Session Summary
+
+Implemented Phase 8 multi-calendar support with tag-based routing. Users can now map specific tags to specific calendars (e.g., #work → Work Calendar). Tasks with mapped tags sync to their designated calendar, while tasks without tags or with unmapped tags use the default calendar.
+
+### What Was Done
+
+| Item | Details |
+|------|---------|
+| **Settings & Data** | |
+| tagCalendarMappings | Added `Record<string, string>` to settings (tag → calendarId) |
+| Default calendar | Renamed "Target calendar" to "Default calendar" with updated description |
+| **Settings UI** | |
+| Mappings list | Shows current mappings with tag, arrow, calendar name, delete button |
+| Add mapping | Input for tag, dropdown for calendar, Add button |
+| Validation | Normalizes tags to include #, prevents duplicates |
+| **Sync Logic** | |
+| getTargetCalendarForTask() | Determines target calendar based on task tags |
+| computeMultiCalendarSyncDiff() | New method in SyncManager for per-task calendar routing |
+| Multi-tag handling | Warning notice + fallback to default if task has multiple mapped tags |
+| Tag change behavior | Old event becomes dormant, new event created in new calendar |
+| Completed/orphaned tasks | Use their stored calendarId for operations |
+| **CSS** | Full styling for mapping UI (list, rows, add section) |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `main.ts` | tagCalendarMappings in settings, getTargetCalendarForTask(), updated syncTasks(), renderTagMappings() in settings |
+| `src/syncManager.ts` | MultiCalendarSyncDiff interface, computeMultiCalendarSyncDiff() method |
+| `styles.css` | Tag mapping UI styles |
+| `docs/ADR Priority List - Chronos.md` | Phase 8 marked complete |
+
+### Key Decisions Made
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Multiple mapped tags | Warning + use default | Clear feedback, safe fallback |
+| Tag change behavior | Create new event, old becomes dormant | User agency, matches calendar switch behavior |
+| Tag normalization | Always store with # prefix | Consistent matching |
+
+### Testing Notes
+
+1. Settings → Chronos → "Tag-to-Calendar Mappings"
+2. Add a mapping: type `#work`, select a calendar, click Add
+3. Create a task with the tag: `- [ ] Test task #work 📅 2026-01-15`
+4. Sync and verify event goes to mapped calendar
+5. Test with multiple mapped tags to see warning
 
 ---
 
@@ -321,13 +373,13 @@ Chronos - Active Development
 **Docs:**
 - docs\Handoff Log.md - START HERE for context
 - docs\ADR-001-Architecture.md - Core architecture
-- docs\ADR Priority List - Chronos.md - Feature roadmap (Phase 8 next)
+- docs\ADR Priority List - Chronos.md - Feature roadmap
 - CLAUDE.md - Working guidelines + task format
 - README.md - User documentation with Google Cloud setup
 
-**CURRENT STATE: PHASES 7 & 9 COMPLETE**
+**CURRENT STATE: PHASES 7, 8 & 9 COMPLETE**
 
-All features through Phase 9 (Phase 8 skipped for now):
+All planned phases complete:
 - User-provided OAuth credentials (each user creates own Google Cloud project)
 - Task parsing (📅 dates, ⏰ times, 🚫 no-sync, 🔔 custom reminders)
 - Event creation (timed and all-day)
@@ -345,9 +397,12 @@ All features through Phase 9 (Phase 8 skipped for now):
 - Sync log/history modal (batched by sync run, collapsible cards)
 - Per-task reminder override (🔔 30,10 syntax + modal UI)
 - Custom reminders UI in date/time modal (toggle + 2 input fields)
+- Multi-calendar support (tag → calendar mappings in settings)
 
-**NEXT PHASE TO IMPLEMENT:**
-- Phase 8: Multi-calendar support (tag-based routing)
+**READY FOR:**
+- Beta testing (BRAT)
+- README updates for multi-calendar feature
+- "Maybe Someday" features if desired
 
 **Build & Deploy:**
 npm run build → Reload Obsidian (Ctrl+P → "Reload app without saving")
