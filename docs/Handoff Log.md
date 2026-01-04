@@ -1,9 +1,114 @@
 # Chronos Handoff Log
 
-**Last Updated:** January 3, 2026
-**Current Phase:** Active Development - Phases 8-9
-**Current Branch:** feature/phase-7-qol-upgrades-1
+**Last Updated:** January 4, 2026
+**Current Phase:** Active Development - Phase 8 remaining
+**Current Branch:** feature/phase-9-qol-upgrades-2
 **Version:** 0.1.0
+
+---
+
+## Session: January 4, 2026 (Session 7) - Phase 9 Polish: Custom Reminders Modal & History Batching
+
+### Session Summary
+
+Polished Phase 9 features with improved UX. Added custom reminders UI to the date/time modal (toggle + input fields) so users don't need to type the 🔔 syntax manually. Refactored sync history to display as collapsible batch cards instead of a flat list of 100 entries.
+
+### What Was Done
+
+| Item | Details |
+|------|---------|
+| **Custom Reminders Modal UI** | |
+| Toggle added | "Custom reminders" toggle in date/time modal |
+| Input fields | Two number inputs for reminder 1 and reminder 2 (minutes) |
+| Auto-insert syntax | Modal inserts `🔔 30,10` when custom reminders enabled |
+| CSS styling | New styles for reminder section and inputs |
+| **Sync History Batching** | |
+| batchId field | Added to SyncLogEntry interface |
+| generateBatchId() | Creates unique ID for each sync run |
+| Batch grouping | Entries grouped by batchId in modal |
+| Collapsible cards | Each batch is a card showing timestamp + summary |
+| Summary text | e.g., "Jan 4, 3:45 PM — 3 created, 1 updated" |
+| Error highlighting | Batches with failures have red left border |
+| Header count | Shows "5 syncs (23 operations)" |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `src/syncManager.ts` | Added batchId to SyncLogEntry, generateBatchId(), updated logOperation() |
+| `src/dateTimeModal.ts` | Already had customReminders fields from previous session |
+| `main.ts` | Generate batchId in syncTasks(), pass to all logOperation() calls, refactored SyncLogModal with batch grouping |
+| `styles.css` | Added reminder input styles, batch card styles |
+
+### Key Decisions Made
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Batch ID format | Timestamp + random suffix | Simple, unique, no collisions |
+| Two reminder inputs | Max 2 in modal | Covers 99% of use cases; power users can type syntax for more |
+| Batch cards collapsed by default | Yes | Reduces visual noise, click to expand |
+
+### Testing Notes
+
+- Custom reminders: Ctrl+P → "Chronos: Insert date/time for task" → toggle "Custom reminders"
+- Sync history: Run a sync, then Ctrl+P → "Chronos: View sync history"
+- Old log entries without batchId will group under one "unknown" batch
+
+---
+
+## Session: January 3, 2026 (Session 6) - Phase 9 Complete: Sync Log & Reminder Override
+
+### Session Summary
+
+Completed Phase 9 with sync history logging and per-task reminder override. Also fixed calendar color display in agenda sidebar and added timezone abbreviations.
+
+### What Was Done
+
+| Item | Details |
+|------|---------|
+| **Bug Fix: Calendar Colors** | |
+| Calendar color fallback | Events now use calendar's default color when no individual color set |
+| Added getCalendarColor() | Fetches selected calendar's background color |
+| Reload on calendar change | Colors refresh when user changes target calendar |
+| **Timezone Abbreviations** | |
+| Updated dropdown | All timezones now show abbreviations (e.g., "America/Chicago (CST/CDT)") |
+| **Sync Log/History (Phase 9.1)** | |
+| SyncLogEntry interface | Type, timestamp, task title, file path, success/error |
+| Log in SyncManager | Stores last 100 operations, newest first |
+| SyncLogModal | Shows history with icons, timestamps, error messages |
+| Clear log button | User can clear history |
+| Command | "Chronos: View sync history" |
+| **Per-Task Reminder Override (Phase 9.2)** | |
+| 🔔 syntax parsing | Parse `🔔 30,10` or `🔔 5` from task lines |
+| reminderMinutes field | Added to ChronosTask interface |
+| Event creation updated | Uses task-specific reminders when set |
+| Stripped from title | 🔔 markers removed from event title |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `src/syncManager.ts` | Added SyncLogEntry interface, syncLog array, logOperation(), getSyncLog(), clearSyncLog() |
+| `src/taskParser.ts` | Added reminderMinutes field, REMINDER_PATTERN, parsing logic |
+| `src/agendaView.ts` | Added calendarColor, getCalendarColor dependency, reloadColors() |
+| `main.ts` | SyncLogModal, logging calls in syncTasks, reminder override in event creation, timezone abbreviations |
+| `styles.css` | Sync log modal styles |
+| `CLAUDE.md` | Added 🔔 syntax documentation |
+| `docs/ADR Priority List - Chronos.md` | Phase 9 marked complete |
+
+### Key Decisions Made
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Log limit | 100 entries | Balance between history and storage |
+| Reminder syntax | 🔔 30,10 | Matches emoji pattern, comma-separated is clear |
+| Log display | Newest first | Most relevant operations at top |
+
+### Testing Notes
+
+- View sync history: Ctrl+P → "Chronos: View sync history"
+- Test custom reminders: Create task with `🔔 5` for 5-minute reminder
+- Verify calendar colors in agenda sidebar
 
 ---
 
@@ -210,21 +315,21 @@ Chronos - Active Development
 **Directory:** C:\Users\bwales\projects\obsidian-plugins\Chronos
 **Deploy to:** G:\My Drive\IT\Obsidian Vault\My Notebooks\.obsidian\plugins\chronos\
 **GitHub:** https://github.com/thuban87/Chronos (public)
-**Current branch:** feature/phase-7-qol-upgrades-1 (or main after merge)
+**Current branch:** feature/phase-9-qol-upgrades-2 (or main after merge)
 **Version:** 0.1.0
 
 **Docs:**
 - docs\Handoff Log.md - START HERE for context
 - docs\ADR-001-Architecture.md - Core architecture
-- docs\ADR Priority List - Chronos.md - Feature roadmap (Phases 8-9 next)
+- docs\ADR Priority List - Chronos.md - Feature roadmap (Phase 8 next)
 - CLAUDE.md - Working guidelines + task format
 - README.md - User documentation with Google Cloud setup
 
-**CURRENT STATE: PHASE 7 COMPLETE**
+**CURRENT STATE: PHASES 7 & 9 COMPLETE**
 
-All features through Phase 7:
+All features through Phase 9 (Phase 8 skipped for now):
 - User-provided OAuth credentials (each user creates own Google Cloud project)
-- Task parsing (📅 dates, ⏰ times, 🚫 no-sync)
+- Task parsing (📅 dates, ⏰ times, 🚫 no-sync, 🔔 custom reminders)
 - Event creation (timed and all-day)
 - Duplicate prevention with content hashing
 - Change detection and event updates
@@ -236,17 +341,20 @@ All features through Phase 7:
 - Offline queue with auto-retry
 - Performance optimized (metadataCache)
 - Daily agenda sidebar with day navigation and event colors
-- Timezone setting (System Local + 35 IANA timezones)
+- Timezone setting (System Local + 35 IANA timezones with abbreviations)
+- Sync log/history modal (batched by sync run, collapsible cards)
+- Per-task reminder override (🔔 30,10 syntax + modal UI)
+- Custom reminders UI in date/time modal (toggle + 2 input fields)
 
-**NEXT PHASES TO IMPLEMENT:**
+**NEXT PHASE TO IMPLEMENT:**
 - Phase 8: Multi-calendar support (tag-based routing)
-- Phase 9: Sync log/history + Per-task reminder override
 
 **Build & Deploy:**
 npm run build → Reload Obsidian (Ctrl+P → "Reload app without saving")
 
 **Test Commands:**
 - Ctrl+P → "Chronos: Toggle today's agenda sidebar"
+- Ctrl+P → "Chronos: View sync history"
 - Ctrl+P → "Chronos: Scan vault for sync-eligible tasks"
 - Ctrl+P → "Chronos: Sync tasks to Google Calendar now"
 - Ctrl+P → "Chronos: Insert date/time for task" (or Ctrl+Shift+D)
@@ -278,6 +386,7 @@ Ctrl+P → "Reload app without saving" OR toggle plugin off/on
 - [ ] Timed task 📅 2026-01-15 ⏰ 14:00
 - [ ] All-day task 📅 2026-01-15
 - [ ] Excluded task 📅 2026-01-15 🚫
+- [ ] Custom reminders 📅 2026-01-15 ⏰ 14:00 🔔 60,30,10
 ```
 
 ---

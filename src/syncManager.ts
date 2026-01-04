@@ -1,6 +1,26 @@
 import { ChronosTask } from './taskParser';
 
 /**
+ * A log entry for sync operations
+ */
+export interface SyncLogEntry {
+    /** Timestamp of the operation */
+    timestamp: string;
+    /** Batch ID to group operations from the same sync run */
+    batchId: string;
+    /** Type of operation */
+    type: 'create' | 'update' | 'delete' | 'complete' | 'recreate' | 'error';
+    /** Task title or description */
+    taskTitle: string;
+    /** Source file path */
+    filePath?: string;
+    /** Whether the operation succeeded */
+    success: boolean;
+    /** Error message if failed */
+    errorMessage?: string;
+}
+
+/**
  * A pending operation that failed and needs to be retried
  */
 export interface PendingOperation {
@@ -56,6 +76,8 @@ export interface ChronosSyncData {
     lastSyncAt: string | null;
     /** Queue of operations that failed and need to be retried */
     pendingOperations: PendingOperation[];
+    /** Log of recent sync operations */
+    syncLog: SyncLogEntry[];
 }
 
 /**
@@ -77,16 +99,21 @@ export interface SyncDiff {
  */
 export class SyncManager {
     private syncData: ChronosSyncData;
+    private static MAX_LOG_ENTRIES = 100;
 
     constructor(syncData?: ChronosSyncData) {
         this.syncData = syncData || {
             syncedTasks: {},
             lastSyncAt: null,
             pendingOperations: [],
+            syncLog: [],
         };
-        // Ensure pendingOperations exists (for backwards compatibility)
+        // Ensure arrays exist (for backwards compatibility)
         if (!this.syncData.pendingOperations) {
             this.syncData.pendingOperations = [];
+        }
+        if (!this.syncData.syncLog) {
+            this.syncData.syncLog = [];
         }
     }
 
@@ -294,5 +321,45 @@ export class SyncManager {
      */
     getPendingOperationCount(): number {
         return this.syncData.pendingOperations.length;
+    }
+
+    /**
+     * Generate a unique batch ID for grouping sync operations
+     */
+    generateBatchId(): string {
+        return Date.now().toString(36) + Math.random().toString(36).substring(2, 6);
+    }
+
+    /**
+     * Add an entry to the sync log
+     */
+    logOperation(entry: Omit<SyncLogEntry, 'timestamp'>, batchId?: string): void {
+        const fullEntry: SyncLogEntry = {
+            ...entry,
+            timestamp: new Date().toISOString(),
+            batchId: batchId || entry.batchId || this.generateBatchId(),
+        };
+
+        // Add to beginning (newest first)
+        this.syncData.syncLog.unshift(fullEntry);
+
+        // Trim to max entries
+        if (this.syncData.syncLog.length > SyncManager.MAX_LOG_ENTRIES) {
+            this.syncData.syncLog = this.syncData.syncLog.slice(0, SyncManager.MAX_LOG_ENTRIES);
+        }
+    }
+
+    /**
+     * Get the sync log
+     */
+    getSyncLog(): SyncLogEntry[] {
+        return this.syncData.syncLog;
+    }
+
+    /**
+     * Clear the sync log
+     */
+    clearSyncLog(): void {
+        this.syncData.syncLog = [];
     }
 }

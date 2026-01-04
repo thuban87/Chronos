@@ -3,7 +3,7 @@ import { GoogleAuth, TokenData, GoogleAuthCredentials } from './src/googleAuth';
 import { TaskParser, ChronosTask } from './src/taskParser';
 import { DateTimeModal } from './src/dateTimeModal';
 import { GoogleCalendarApi, GoogleCalendar, GoogleEvent } from './src/googleCalendar';
-import { SyncManager, ChronosSyncData, PendingOperation } from './src/syncManager';
+import { SyncManager, ChronosSyncData, PendingOperation, SyncLogEntry } from './src/syncManager';
 import { AgendaView, AGENDA_VIEW_TYPE, AgendaViewDeps } from './src/agendaView';
 
 interface ChronosSettings {
@@ -100,6 +100,12 @@ export default class ChronosPlugin extends Plugin {
 					if (result.time) {
 						text += ` ⏰ ${result.time}`;
 					}
+					if (result.customReminders && (result.reminder1 || result.reminder2)) {
+						const reminders: number[] = [];
+						if (result.reminder1) reminders.push(result.reminder1);
+						if (result.reminder2) reminders.push(result.reminder2);
+						text += ` 🔔 ${reminders.join(',')}`;
+					}
 					if (result.noSync) {
 						text += ' 🚫';
 					}
@@ -123,6 +129,15 @@ export default class ChronosPlugin extends Plugin {
 			name: "Toggle today's agenda sidebar",
 			callback: async () => {
 				await this.toggleAgendaView();
+			}
+		});
+
+		// Add command to view sync log
+		this.addCommand({
+			id: 'view-sync-log',
+			name: 'View sync history',
+			callback: () => {
+				new SyncLogModal(this.app, this).open();
 			}
 		});
 
@@ -211,6 +226,9 @@ export default class ChronosPlugin extends Plugin {
 		if (!silent) new Notice('Chronos: Syncing tasks...');
 
 		try {
+			// Generate a batch ID for this sync run
+			const batchId = this.syncManager.generateBatchId();
+
 			// First, retry any pending operations from previous failures
 			const retryResult = await this.retryPendingOperations();
 
@@ -237,17 +255,34 @@ export default class ChronosPlugin extends Plugin {
 			// Create new events
 			for (const task of diff.toCreate) {
 				try {
+					// Use task-specific reminders if set, otherwise use defaults
+					const reminderMinutes = task.reminderMinutes || this.settings.defaultReminderMinutes;
 					const event = await this.calendarApi.createEvent({
 						task,
 						calendarId,
 						durationMinutes: this.settings.defaultEventDurationMinutes,
-						reminderMinutes: this.settings.defaultReminderMinutes,
+						reminderMinutes,
 						timeZone,
 					});
 					this.syncManager.recordSync(task, event.id, calendarId);
+					this.syncManager.logOperation({
+						type: 'create',
+						taskTitle: task.title,
+						filePath: task.filePath,
+						success: true,
+						batchId,
+					}, batchId);
 					created++;
-				} catch (error) {
+				} catch (error: any) {
 					console.error('Failed to create event for task:', task.title, error);
+					this.syncManager.logOperation({
+						type: 'create',
+						taskTitle: task.title,
+						filePath: task.filePath,
+						success: false,
+						errorMessage: error?.message || String(error),
+						batchId,
+					}, batchId);
 					if (this.isRetryableError(error)) {
 						this.syncManager.queueOperation({
 							type: 'create',
@@ -271,17 +306,34 @@ export default class ChronosPlugin extends Plugin {
 			// Update existing events
 			for (const { task, eventId } of diff.toUpdate) {
 				try {
+					// Use task-specific reminders if set, otherwise use defaults
+					const reminderMinutes = task.reminderMinutes || this.settings.defaultReminderMinutes;
 					await this.calendarApi.updateEvent(calendarId, eventId, {
 						task,
 						calendarId,
 						durationMinutes: this.settings.defaultEventDurationMinutes,
-						reminderMinutes: this.settings.defaultReminderMinutes,
+						reminderMinutes,
 						timeZone,
 					});
 					this.syncManager.recordSync(task, eventId, calendarId);
+					this.syncManager.logOperation({
+						type: 'update',
+						taskTitle: task.title,
+						filePath: task.filePath,
+						success: true,
+						batchId,
+					}, batchId);
 					updated++;
-				} catch (error) {
+				} catch (error: any) {
 					console.error('Failed to update event for task:', task.title, error);
+					this.syncManager.logOperation({
+						type: 'update',
+						taskTitle: task.title,
+						filePath: task.filePath,
+						success: false,
+						errorMessage: error?.message || String(error),
+						batchId,
+					}, batchId);
 					if (this.isRetryableError(error)) {
 						this.syncManager.queueOperation({
 							type: 'update',
@@ -314,17 +366,34 @@ export default class ChronosPlugin extends Plugin {
 					if (!exists) {
 						// Event was deleted externally - recreate it
 						try {
+							// Use task-specific reminders if set, otherwise use defaults
+							const reminderMinutes = task.reminderMinutes || this.settings.defaultReminderMinutes;
 							const event = await this.calendarApi.createEvent({
 								task,
 								calendarId,
 								durationMinutes: this.settings.defaultEventDurationMinutes,
-								reminderMinutes: this.settings.defaultReminderMinutes,
+								reminderMinutes,
 								timeZone,
 							});
 							this.syncManager.recordSync(task, event.id, calendarId);
+							this.syncManager.logOperation({
+								type: 'recreate',
+								taskTitle: task.title,
+								filePath: task.filePath,
+								success: true,
+								batchId,
+							}, batchId);
 							recreated++;
-						} catch (error) {
+						} catch (error: any) {
 							console.error('Failed to recreate event for task:', task.title, error);
+							this.syncManager.logOperation({
+								type: 'recreate',
+								taskTitle: task.title,
+								filePath: task.filePath,
+								success: false,
+								errorMessage: error?.message || String(error),
+								batchId,
+							}, batchId);
 							failed++;
 						}
 					} else {
@@ -343,18 +412,40 @@ export default class ChronosPlugin extends Plugin {
 					try {
 						if (this.settings.completedTaskBehavior === 'delete') {
 							await this.calendarApi.deleteEvent(calendarId, syncInfo.eventId);
+							this.syncManager.logOperation({
+								type: 'delete',
+								taskTitle: task.title,
+								filePath: task.filePath,
+								success: true,
+								batchId,
+							}, batchId);
 							deleted++;
 						} else {
 							// markComplete - update the event title
 							await this.calendarApi.markEventCompleted(calendarId, syncInfo.eventId, new Date());
+							this.syncManager.logOperation({
+								type: 'complete',
+								taskTitle: task.title,
+								filePath: task.filePath,
+								success: true,
+								batchId,
+							}, batchId);
 							completed++;
 						}
 						// Remove from sync data either way
 						this.syncManager.removeSync(taskId);
-					} catch (error) {
+					} catch (error: any) {
 						console.error('Failed to handle completed task:', task.title, error);
+						const opType = this.settings.completedTaskBehavior === 'delete' ? 'delete' : 'complete';
+						this.syncManager.logOperation({
+							type: opType,
+							taskTitle: task.title,
+							filePath: task.filePath,
+							success: false,
+							errorMessage: error?.message || String(error),
+							batchId,
+						}, batchId);
 						if (this.isRetryableError(error)) {
-							const opType = this.settings.completedTaskBehavior === 'delete' ? 'delete' : 'complete';
 							this.syncManager.queueOperation({
 								type: opType,
 								taskId,
@@ -375,10 +466,25 @@ export default class ChronosPlugin extends Plugin {
 				if (syncInfo) {
 					try {
 						await this.calendarApi.deleteEvent(calendarId, syncInfo.eventId);
+						this.syncManager.logOperation({
+							type: 'delete',
+							taskTitle: `(orphaned task)`,
+							filePath: syncInfo.filePath,
+							success: true,
+							batchId,
+						}, batchId);
 						deleted++;
 						this.syncManager.removeSync(taskId);
-					} catch (error) {
+					} catch (error: any) {
 						console.error('Failed to delete orphaned event:', taskId, error);
+						this.syncManager.logOperation({
+							type: 'delete',
+							taskTitle: `(orphaned task)`,
+							filePath: syncInfo.filePath,
+							success: false,
+							errorMessage: error?.message || String(error),
+							batchId,
+						}, batchId);
 						if (this.isRetryableError(error)) {
 							this.syncManager.queueOperation({
 								type: 'delete',
@@ -1403,6 +1509,275 @@ class TaskListModal extends Modal {
 			text: `📄 ${task.filePath}:${task.lineNumber}`,
 			cls: 'chronos-task-filepath'
 		});
+	}
+
+	onClose() {
+		const { contentEl } = this;
+		contentEl.empty();
+	}
+}
+
+/**
+ * A batch of sync log entries grouped by batchId
+ */
+interface SyncLogBatch {
+	batchId: string;
+	timestamp: string;
+	entries: SyncLogEntry[];
+	summary: {
+		created: number;
+		updated: number;
+		deleted: number;
+		completed: number;
+		recreated: number;
+		failed: number;
+	};
+}
+
+/**
+ * Modal to display sync history/log grouped by batch
+ */
+class SyncLogModal extends Modal {
+	plugin: ChronosPlugin;
+
+	constructor(app: App, plugin: ChronosPlugin) {
+		super(app);
+		this.plugin = plugin;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.addClass('chronos-sync-log-modal');
+
+		contentEl.createEl('h2', { text: 'Sync History' });
+
+		const log = this.plugin.syncManager.getSyncLog();
+
+		if (log.length === 0) {
+			contentEl.createEl('p', {
+				text: 'No sync operations recorded yet.',
+				cls: 'chronos-empty-log'
+			});
+			contentEl.createEl('p', {
+				text: 'Sync your tasks to start building history.',
+				cls: 'chronos-hint'
+			});
+			return;
+		}
+
+		// Group entries by batchId
+		const batches = this.groupEntriesByBatch(log);
+
+		// Header with count and clear button
+		const header = contentEl.createDiv({ cls: 'chronos-log-header' });
+		header.createEl('span', {
+			text: `${batches.length} sync${batches.length === 1 ? '' : 's'} (${log.length} operations)`,
+			cls: 'chronos-log-count'
+		});
+
+		const clearBtn = header.createEl('button', {
+			text: 'Clear Log',
+			cls: 'chronos-clear-log-btn'
+		});
+		clearBtn.addEventListener('click', () => {
+			this.plugin.syncManager.clearSyncLog();
+			this.plugin.saveSettings();
+			this.onOpen(); // Refresh
+		});
+
+		// Render batch cards
+		const batchContainer = contentEl.createDiv({ cls: 'chronos-batch-container' });
+
+		for (const batch of batches) {
+			this.renderBatchCard(batchContainer, batch);
+		}
+	}
+
+	/**
+	 * Group log entries by batchId
+	 */
+	private groupEntriesByBatch(log: SyncLogEntry[]): SyncLogBatch[] {
+		const batchMap = new Map<string, SyncLogEntry[]>();
+
+		// Group entries by batchId
+		for (const entry of log) {
+			const batchId = entry.batchId || 'unknown';
+			if (!batchMap.has(batchId)) {
+				batchMap.set(batchId, []);
+			}
+			batchMap.get(batchId)!.push(entry);
+		}
+
+		// Convert to batch objects
+		const batches: SyncLogBatch[] = [];
+		for (const [batchId, entries] of batchMap) {
+			// Use the earliest timestamp in the batch
+			const timestamps = entries.map(e => new Date(e.timestamp).getTime());
+			const earliestTimestamp = new Date(Math.min(...timestamps)).toISOString();
+
+			// Count operations by type
+			const summary = {
+				created: 0,
+				updated: 0,
+				deleted: 0,
+				completed: 0,
+				recreated: 0,
+				failed: 0,
+			};
+
+			for (const entry of entries) {
+				if (!entry.success) {
+					summary.failed++;
+				} else if (entry.type === 'create') {
+					summary.created++;
+				} else if (entry.type === 'update') {
+					summary.updated++;
+				} else if (entry.type === 'delete') {
+					summary.deleted++;
+				} else if (entry.type === 'complete') {
+					summary.completed++;
+				} else if (entry.type === 'recreate') {
+					summary.recreated++;
+				}
+			}
+
+			batches.push({
+				batchId,
+				timestamp: earliestTimestamp,
+				entries,
+				summary,
+			});
+		}
+
+		// Sort batches by timestamp (newest first)
+		batches.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+		return batches;
+	}
+
+	/**
+	 * Build a summary string from batch counts
+	 */
+	private buildSummaryText(summary: SyncLogBatch['summary']): string {
+		const parts: string[] = [];
+		if (summary.created > 0) parts.push(`${summary.created} created`);
+		if (summary.updated > 0) parts.push(`${summary.updated} updated`);
+		if (summary.deleted > 0) parts.push(`${summary.deleted} deleted`);
+		if (summary.completed > 0) parts.push(`${summary.completed} completed`);
+		if (summary.recreated > 0) parts.push(`${summary.recreated} recreated`);
+		if (summary.failed > 0) parts.push(`${summary.failed} failed`);
+		return parts.length > 0 ? parts.join(', ') : 'No operations';
+	}
+
+	/**
+	 * Render a collapsible batch card
+	 */
+	private renderBatchCard(container: HTMLElement, batch: SyncLogBatch): void {
+		const hasErrors = batch.summary.failed > 0;
+		const batchDiv = container.createDiv({
+			cls: `chronos-batch-card ${hasErrors ? 'chronos-batch-has-errors' : ''}`
+		});
+
+		// Header (clickable to expand)
+		const header = batchDiv.createDiv({ cls: 'chronos-batch-header' });
+
+		const arrow = header.createSpan({ cls: 'chronos-collapse-arrow', text: '▶' });
+
+		// Timestamp
+		const timestamp = new Date(batch.timestamp);
+		const timeStr = timestamp.toLocaleString(undefined, {
+			month: 'short',
+			day: 'numeric',
+			hour: 'numeric',
+			minute: '2-digit'
+		});
+
+		header.createSpan({
+			text: timeStr,
+			cls: 'chronos-batch-time'
+		});
+
+		// Summary
+		header.createSpan({
+			text: ` — ${this.buildSummaryText(batch.summary)}`,
+			cls: 'chronos-batch-summary'
+		});
+
+		// Collapsible content
+		const content = batchDiv.createDiv({ cls: 'chronos-batch-content chronos-collapsed' });
+
+		// Toggle collapse on header click
+		header.addEventListener('click', () => {
+			const isCollapsed = content.hasClass('chronos-collapsed');
+			if (isCollapsed) {
+				content.removeClass('chronos-collapsed');
+				arrow.setText('▼');
+			} else {
+				content.addClass('chronos-collapsed');
+				arrow.setText('▶');
+			}
+		});
+
+		// Render individual entries inside the batch
+		for (const entry of batch.entries) {
+			this.renderLogEntry(content, entry);
+		}
+	}
+
+	private renderLogEntry(container: HTMLElement, entry: SyncLogEntry): void {
+		const entryDiv = container.createDiv({
+			cls: `chronos-log-entry ${entry.success ? 'chronos-log-success' : 'chronos-log-error'}`
+		});
+
+		// Icon based on type
+		const icons: Record<string, string> = {
+			create: '➕',
+			update: '✏️',
+			delete: '🗑️',
+			complete: '✅',
+			recreate: '🔄',
+			error: '❌',
+		};
+
+		const typeLabels: Record<string, string> = {
+			create: 'Created',
+			update: 'Updated',
+			delete: 'Deleted',
+			complete: 'Completed',
+			recreate: 'Recreated',
+			error: 'Error',
+		};
+
+		// Type and title on same line
+		const headerDiv = entryDiv.createDiv({ cls: 'chronos-log-entry-header' });
+		headerDiv.createSpan({
+			text: `${icons[entry.type] || '•'} ${typeLabels[entry.type] || entry.type}`,
+			cls: 'chronos-log-type'
+		});
+
+		// Task title
+		entryDiv.createDiv({
+			text: entry.taskTitle,
+			cls: 'chronos-log-title'
+		});
+
+		// File path (if available)
+		if (entry.filePath) {
+			const fileName = entry.filePath.split('/').pop() || entry.filePath;
+			entryDiv.createDiv({
+				text: `📄 ${fileName}`,
+				cls: 'chronos-log-file'
+			});
+		}
+
+		// Error message (if failed)
+		if (!entry.success && entry.errorMessage) {
+			entryDiv.createDiv({
+				text: `Error: ${entry.errorMessage}`,
+				cls: 'chronos-log-error-msg'
+			});
+		}
 	}
 
 	onClose() {
