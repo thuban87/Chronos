@@ -42,7 +42,6 @@ export class GoogleCalendarApi {
      */
     async listCalendars(): Promise<GoogleCalendar[]> {
         const token = await this.getAccessToken();
-        console.log('Chronos: listCalendars called, token exists:', !!token);
 
         if (!token) {
             throw new Error('Not authenticated');
@@ -55,8 +54,6 @@ export class GoogleCalendarApi {
                     'Authorization': `Bearer ${token}`,
                 },
             });
-
-            console.log('Chronos: calendarList response status:', response.status);
 
             if (response.status !== 200) {
                 console.error('Chronos: calendarList error response:', response.json);
@@ -216,12 +213,9 @@ export class GoogleCalendarApi {
 
             // Check if event is cancelled (deleted in Google Calendar)
             const eventStatus = response.json?.status;
-            const exists = response.status === 200 && eventStatus !== 'cancelled';
-            console.log(`Chronos: eventExists check for ${eventId}: httpStatus=${response.status}, eventStatus=${eventStatus}, exists=${exists}`);
-            return exists;
-        } catch (error: any) {
-            // requestUrl throws on non-2xx responses
-            console.log(`Chronos: eventExists check for ${eventId}: error/not found`, error?.status || error);
+            return response.status === 200 && eventStatus !== 'cancelled';
+        } catch {
+            // requestUrl throws on non-2xx responses (404 = not found)
             return false;
         }
     }

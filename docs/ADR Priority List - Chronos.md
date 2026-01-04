@@ -2,6 +2,7 @@
 
 **Last Updated:** January 3, 2026
 **Version:** 0.1.0
+**Status:** MVP COMPLETE
 
 ---
 
@@ -67,54 +68,112 @@
 
 ---
 
-## Phase 4: Sync Infrastructure - PENDING (NEXT)
+## Phase 4: Sync Infrastructure - COMPLETE ✓
 
 **Goal:** Plugin can track synced tasks and detect changes.
 
 | Order | Feature | Status | Notes |
 |-------|---------|--------|-------|
-| 19 | Task ID generation | Pending | Hash-based unique identifier |
-| 20 | Sync data structure | Pending | Task ID → Event ID mapping |
-| 21 | Content hashing | Pending | Detect task text changes |
-| 22 | Interval-based sync trigger | Pending | Configurable interval (default 10 min) |
-| 23 | Change detection | Pending | Compare current vs last synced state |
-| 24 | Event update API call | Pending | Update existing calendar event |
+| 19 | Task ID generation | ✓ Complete | Hash of filePath + title + date |
+| 20 | Sync data structure | ✓ Complete | Task ID → Event ID mapping |
+| 21 | Content hashing | ✓ Complete | Detect task text changes |
+| 22 | Interval-based sync trigger | ✓ Complete | Configurable interval (default 10 min) |
+| 23 | Change detection | ✓ Complete | Compare current vs last synced state |
+| 24 | Event update API call | ✓ Complete | Update existing calendar event |
 
-**Phase 4 Deliverable:** Editing a task updates the calendar event on next sync.
+**Additional features implemented:**
+- External deletion detection (recreates events deleted in Google Calendar)
+- SyncManager class for all sync state management
+
+**Phase 4 Deliverable:** Editing a task updates the calendar event on next sync. ✓
 
 ---
 
-## Phase 5: Task Lifecycle - PENDING
+## Phase 5: Task Lifecycle - COMPLETE ✓
 
 **Goal:** Handle completed and deleted tasks.
 
 | Order | Feature | Status | Notes |
 |-------|---------|--------|-------|
-| 25 | Completed task detection | Pending | `- [x]` marks task done |
-| 26 | Event deletion | Pending | Remove calendar event for completed task |
-| 27 | Deleted task detection | Pending | Task ID no longer in vault |
-| 28 | Orphan event cleanup | Pending | Delete events for deleted tasks |
+| 25 | Completed task detection | ✓ Complete | `- [x]` marks task done |
+| 26 | Completion behavior setting | ✓ Complete | Delete or mark as completed |
+| 27 | Mark complete feature | ✓ Complete | Appends "- Completed MM-DD-YYYY, HH:mm" |
+| 28 | Event deletion | ✓ Complete | Remove calendar event option |
+| 29 | Deleted task detection | ✓ Complete | Task ID no longer in vault |
+| 30 | Orphan event cleanup | ✓ Complete | Delete events for deleted tasks |
 
-**Phase 5 Deliverable:** Completing or deleting a task removes it from calendar.
+**Phase 5 Deliverable:** Completing or deleting a task handles the calendar event appropriately. ✓
 
 ---
 
-## Phase 6: Polish & UX - PENDING
+## Phase 6: Polish & UX - COMPLETE ✓
 
 **Goal:** Production-ready with good error handling.
 
 | Order | Feature | Status | Notes |
 |-------|---------|--------|-------|
-| 29 | Sync status indicator | Pending | Show last sync time, next sync |
-| 30 | Manual sync command | ✓ Complete | Force sync via command palette (done in Phase 3) |
-| 31 | Error notifications | Partial | Basic notices, needs improvement |
-| 32 | Auth expiry handling | Partial | Token refresh works, needs better UX |
-| 33 | Offline queue | Pending | Queue changes, sync when back online |
-| 34 | Console log cleanup | Pending | Remove debug logs for release |
-| 35 | README.md | Pending | User documentation |
-| 36 | LICENSE | Pending | MIT License |
+| 31 | Sync status indicator | ✓ Complete | Status bar with synced count, last sync |
+| 32 | Manual sync command | ✓ Complete | Force sync via command palette |
+| 33 | Error notifications | ✓ Complete | Actionable messages with directions |
+| 34 | Auth expiry handling | ✓ Complete | Token refresh with clear UX |
+| 35 | Offline queue | ✓ Complete | Queue changes, auto-retry (5 attempts) |
+| 36 | Console log cleanup | ✓ Complete | Removed debug logs |
+| 37 | README.md | ✓ Complete | Full user documentation |
+| 38 | LICENSE | ✓ Complete | MIT License |
+| 39 | Task overview modal | ✓ Complete | 3 sections: unsynced/synced/completed |
+| 40 | AI task format docs | ✓ Complete | CLAUDE.md and GEMINI.md updated |
 
-**Phase 6 Deliverable:** Plugin is polished and ready for personal use / beta.
+**Phase 6 Deliverable:** Plugin is polished and ready for personal use / beta. ✓
+
+---
+
+## Pre-Release Checklist (Community Plugins)
+
+Before submitting Chronos to the Obsidian Community Plugins directory, complete these steps:
+
+### OAuth Consent Screen Verification
+
+**Current Status:** Testing mode (limited to 100 explicitly-added test users)
+
+**Why it matters:** Google requires verification for apps that access user data and will be used by the public. Without verification:
+- Only 100 test users can authenticate
+- Users see a "This app isn't verified" warning
+- Token refresh may be unreliable
+
+**Steps to verify:**
+
+| Step | Description | Status |
+|------|-------------|--------|
+| 1 | Create a privacy policy page | Pending |
+| 2 | Update OAuth consent screen with privacy policy URL | Pending |
+| 3 | Submit for Google verification review | Pending |
+| 4 | Respond to any verification questions | Pending |
+| 5 | Wait for approval (can take 2-6 weeks) | Pending |
+
+**Requirements for verification:**
+- Privacy policy hosted on a public URL
+- Clear description of what data is accessed and why
+- Demo video showing the OAuth flow (sometimes requested)
+- Domain verification (if using custom domain)
+
+**API Quota Notes:**
+- All users share your project's quota (~1 million queries/day)
+- This is effectively unlimited for normal plugin usage
+- Monitor usage in Google Cloud Console if concerned
+
+### Plugin Submission Checklist
+
+| Item | Status |
+|------|--------|
+| OAuth consent screen verified | Pending |
+| README.md with usage instructions | ✓ Complete |
+| LICENSE file (MIT) | ✓ Complete |
+| manifest.json version updated | Pending |
+| Console.log statements removed | ✓ Complete |
+| Tested on Windows | ✓ Complete |
+| Tested on Mac | Pending |
+| Tested on mobile | Pending |
+| Submit PR to obsidian-releases | Pending |
 
 ---
 
@@ -141,8 +200,9 @@
 | Item | Priority | Status |
 |------|----------|--------|
 | EditorSuggest `@cal` trigger not working | Low | onTrigger not called on keystrokes - revisit later |
-| Debug console.logs in googleCalendar.ts | Low | Remove before release |
-| No duplicate prevention | High | Phase 4 will fix - currently re-sync creates duplicates |
+| ~~Debug console.logs~~ | ~~Low~~ | ✓ Fixed - Removed |
+| ~~No duplicate prevention~~ | ~~High~~ | ✓ Fixed - Task ID tracking |
+| Accidental completion edge case | Low | Unchecking creates duplicate (user can delete manually) |
 
 ---
 
@@ -167,14 +227,14 @@
 
 ---
 
-## Difficulty Estimates (Updated)
+## Difficulty Estimates (Final)
 
 | Phase | Estimated Time | Actual Time | Notes |
 |-------|---------------|-------------|-------|
 | Phase 1 (Foundation + OAuth) | 4-6 hours | ~2 hours | OAuth was smoother than expected |
 | Phase 2 (Task Parsing) | 1-2 hours | ~1.5 hours | Added all-day events, no-sync marker |
 | Phase 3 (Event Creation) | 2-3 hours | ~1.5 hours | API worked well once scope was fixed |
-| Phase 4 (Sync Infrastructure) | 2-3 hours | Pending | |
-| Phase 5 (Task Lifecycle) | 1-2 hours | Pending | |
-| Phase 6 (Polish) | 2-4 hours | Pending | |
-| **Total MVP** | **12-20 hours** | ~5 hours so far | Ahead of schedule |
+| Phase 4 (Sync Infrastructure) | 2-3 hours | ~2 hours | External deletion detection added |
+| Phase 5 (Task Lifecycle) | 1-2 hours | ~1 hour | Completion options added |
+| Phase 6 (Polish) | 2-4 hours | ~2 hours | Modal redesign, offline queue |
+| **Total MVP** | **12-20 hours** | **~10 hours** | Completed ahead of schedule |

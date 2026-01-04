@@ -1,6 +1,34 @@
 import { ChronosTask } from './taskParser';
 
 /**
+ * A pending operation that failed and needs to be retried
+ */
+export interface PendingOperation {
+    /** Type of operation */
+    type: 'create' | 'update' | 'delete' | 'complete';
+    /** Task ID for reference */
+    taskId: string;
+    /** Task data (for create/update) */
+    taskData?: {
+        title: string;
+        date: string;
+        time: string | null;
+        filePath: string;
+        lineNumber: number;
+        rawText: string;
+        isAllDay: boolean;
+    };
+    /** Event ID (for update/delete/complete) */
+    eventId?: string;
+    /** Calendar ID */
+    calendarId: string;
+    /** When this operation was queued */
+    queuedAt: string;
+    /** Number of retry attempts */
+    retryCount: number;
+}
+
+/**
  * Information about a synced task stored in plugin data
  */
 export interface SyncedTaskInfo {
@@ -26,6 +54,8 @@ export interface ChronosSyncData {
     syncedTasks: Record<string, SyncedTaskInfo>;
     /** ISO timestamp of last sync operation */
     lastSyncAt: string | null;
+    /** Queue of operations that failed and need to be retried */
+    pendingOperations: PendingOperation[];
 }
 
 /**
@@ -52,7 +82,12 @@ export class SyncManager {
         this.syncData = syncData || {
             syncedTasks: {},
             lastSyncAt: null,
+            pendingOperations: [],
         };
+        // Ensure pendingOperations exists (for backwards compatibility)
+        if (!this.syncData.pendingOperations) {
+            this.syncData.pendingOperations = [];
+        }
     }
 
     /**
@@ -190,5 +225,74 @@ export class SyncManager {
      */
     getSyncedTaskCount(): number {
         return Object.keys(this.syncData.syncedTasks).length;
+    }
+
+    /**
+     * Add a failed operation to the pending queue
+     */
+    queueOperation(operation: Omit<PendingOperation, 'queuedAt' | 'retryCount'>): void {
+        // Check if this operation is already queued (by taskId and type)
+        const existingIndex = this.syncData.pendingOperations.findIndex(
+            op => op.taskId === operation.taskId && op.type === operation.type
+        );
+
+        const fullOperation: PendingOperation = {
+            ...operation,
+            queuedAt: new Date().toISOString(),
+            retryCount: 0,
+        };
+
+        if (existingIndex >= 0) {
+            // Update existing operation
+            this.syncData.pendingOperations[existingIndex] = fullOperation;
+        } else {
+            this.syncData.pendingOperations.push(fullOperation);
+        }
+    }
+
+    /**
+     * Get all pending operations
+     */
+    getPendingOperations(): PendingOperation[] {
+        return [...this.syncData.pendingOperations];
+    }
+
+    /**
+     * Remove a pending operation (after successful retry)
+     */
+    removePendingOperation(taskId: string, type: string): void {
+        this.syncData.pendingOperations = this.syncData.pendingOperations.filter(
+            op => !(op.taskId === taskId && op.type === type)
+        );
+    }
+
+    /**
+     * Increment retry count for an operation
+     */
+    incrementRetryCount(taskId: string, type: string): void {
+        const op = this.syncData.pendingOperations.find(
+            o => o.taskId === taskId && o.type === type
+        );
+        if (op) {
+            op.retryCount++;
+        }
+    }
+
+    /**
+     * Remove operations that have exceeded max retries
+     */
+    pruneFailedOperations(maxRetries: number = 5): PendingOperation[] {
+        const failed = this.syncData.pendingOperations.filter(op => op.retryCount >= maxRetries);
+        this.syncData.pendingOperations = this.syncData.pendingOperations.filter(
+            op => op.retryCount < maxRetries
+        );
+        return failed;
+    }
+
+    /**
+     * Get count of pending operations
+     */
+    getPendingOperationCount(): number {
+        return this.syncData.pendingOperations.length;
     }
 }

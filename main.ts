@@ -3,7 +3,7 @@ import { GoogleAuth, TokenData } from './src/googleAuth';
 import { TaskParser, ChronosTask } from './src/taskParser';
 import { DateTimeModal } from './src/dateTimeModal';
 import { GoogleCalendarApi, GoogleCalendar } from './src/googleCalendar';
-import { SyncManager, ChronosSyncData } from './src/syncManager';
+import { SyncManager, ChronosSyncData, PendingOperation } from './src/syncManager';
 
 interface ChronosSettings {
 	googleCalendarId: string;
@@ -37,6 +37,7 @@ export default class ChronosPlugin extends Plugin {
 	calendarApi: GoogleCalendarApi;
 	syncManager: SyncManager;
 	private syncIntervalId: number | null = null;
+	private statusBarItem: HTMLElement | null = null;
 
 	async onload() {
 		await this.loadSettings();
@@ -92,7 +93,62 @@ export default class ChronosPlugin extends Plugin {
 			}
 		});
 
+		// Add status bar item
+		this.statusBarItem = this.addStatusBarItem();
+		this.statusBarItem.addClass('chronos-status-bar');
+		this.statusBarItem.onClickEvent(() => {
+			this.syncTasks();
+		});
+		this.updateStatusBar();
+
 		console.log('Chronos plugin loaded');
+	}
+
+	/**
+	 * Update the status bar with sync information
+	 */
+	updateStatusBar(): void {
+		if (!this.statusBarItem) return;
+
+		if (!this.isAuthenticated()) {
+			this.statusBarItem.setText('📅 Chronos: Not connected');
+			this.statusBarItem.setAttr('aria-label', 'Click to open settings and connect');
+			return;
+		}
+
+		const lastSync = this.syncManager.getLastSyncTime();
+		const syncedCount = this.syncManager.getSyncedTaskCount();
+
+		if (!lastSync) {
+			this.statusBarItem.setText(`📅 Chronos: ${syncedCount} tasks (never synced)`);
+			this.statusBarItem.setAttr('aria-label', 'Click to sync now');
+			return;
+		}
+
+		const lastSyncDate = new Date(lastSync);
+		const now = new Date();
+		const diffMs = now.getTime() - lastSyncDate.getTime();
+		const diffMins = Math.floor(diffMs / 60000);
+
+		let timeAgo: string;
+		if (diffMins < 1) {
+			timeAgo = 'just now';
+		} else if (diffMins < 60) {
+			timeAgo = `${diffMins}m ago`;
+		} else {
+			const diffHours = Math.floor(diffMins / 60);
+			timeAgo = `${diffHours}h ago`;
+		}
+
+		// Calculate next sync
+		const nextSyncMins = this.settings.syncIntervalMinutes - (diffMins % this.settings.syncIntervalMinutes);
+		const nextSyncText = this.syncIntervalId ? `next in ${nextSyncMins}m` : 'auto-sync off';
+
+		const pendingCount = this.syncManager.getPendingOperationCount();
+		const pendingText = pendingCount > 0 ? ` • ${pendingCount} pending` : '';
+
+		this.statusBarItem.setText(`📅 ${syncedCount} synced${pendingText} • ${timeAgo}`);
+		this.statusBarItem.setAttr('aria-label', `Chronos: Last sync ${timeAgo}, ${nextSyncText}. Click to sync now.`);
 	}
 
 	/**
@@ -100,8 +156,7 @@ export default class ChronosPlugin extends Plugin {
 	 */
 	async showTaskScanResults(): Promise<void> {
 		new Notice('Scanning vault for tasks...');
-		const tasks = await this.taskParser.scanVault();
-		new TaskListModal(this.app, tasks).open();
+		new TaskListModal(this.app, this).open();
 	}
 
 	/**
@@ -111,18 +166,21 @@ export default class ChronosPlugin extends Plugin {
 	 */
 	async syncTasks(silent: boolean = false): Promise<void> {
 		if (!this.isAuthenticated()) {
-			if (!silent) new Notice('Chronos: Please connect to Google Calendar first');
+			if (!silent) new Notice('Chronos: Not connected. Go to Settings → Chronos to connect your Google account.');
 			return;
 		}
 
 		if (!this.settings.googleCalendarId) {
-			if (!silent) new Notice('Chronos: Please select a calendar in settings');
+			if (!silent) new Notice('Chronos: No calendar selected. Go to Settings → Chronos to choose a calendar.');
 			return;
 		}
 
 		if (!silent) new Notice('Chronos: Syncing tasks...');
 
 		try {
+			// First, retry any pending operations from previous failures
+			const retryResult = await this.retryPendingOperations();
+
 			// Scan for ALL tasks including completed ones
 			const allTasks = await this.taskParser.scanVault(true);
 			const calendarId = this.settings.googleCalendarId;
@@ -157,6 +215,22 @@ export default class ChronosPlugin extends Plugin {
 					created++;
 				} catch (error) {
 					console.error('Failed to create event for task:', task.title, error);
+					if (this.isRetryableError(error)) {
+						this.syncManager.queueOperation({
+							type: 'create',
+							taskId: this.syncManager.generateTaskId(task),
+							taskData: {
+								title: task.title,
+								date: task.date,
+								time: task.time,
+								filePath: task.filePath,
+								lineNumber: task.lineNumber,
+								rawText: task.rawText,
+								isAllDay: task.isAllDay,
+							},
+							calendarId,
+						});
+					}
 					failed++;
 				}
 			}
@@ -175,6 +249,23 @@ export default class ChronosPlugin extends Plugin {
 					updated++;
 				} catch (error) {
 					console.error('Failed to update event for task:', task.title, error);
+					if (this.isRetryableError(error)) {
+						this.syncManager.queueOperation({
+							type: 'update',
+							taskId: this.syncManager.generateTaskId(task),
+							eventId,
+							taskData: {
+								title: task.title,
+								date: task.date,
+								time: task.time,
+								filePath: task.filePath,
+								lineNumber: task.lineNumber,
+								rawText: task.rawText,
+								isAllDay: task.isAllDay,
+							},
+							calendarId,
+						});
+					}
 					failed++;
 				}
 			}
@@ -229,8 +320,18 @@ export default class ChronosPlugin extends Plugin {
 						this.syncManager.removeSync(taskId);
 					} catch (error) {
 						console.error('Failed to handle completed task:', task.title, error);
-						// Still remove from sync data - the event might already be gone
-						this.syncManager.removeSync(taskId);
+						if (this.isRetryableError(error)) {
+							const opType = this.settings.completedTaskBehavior === 'delete' ? 'delete' : 'complete';
+							this.syncManager.queueOperation({
+								type: opType,
+								taskId,
+								eventId: syncInfo.eventId,
+								calendarId,
+							});
+						} else {
+							// Non-retryable error - remove from sync data anyway
+							this.syncManager.removeSync(taskId);
+						}
 					}
 				}
 			}
@@ -242,21 +343,34 @@ export default class ChronosPlugin extends Plugin {
 					try {
 						await this.calendarApi.deleteEvent(calendarId, syncInfo.eventId);
 						deleted++;
+						this.syncManager.removeSync(taskId);
 					} catch (error) {
 						console.error('Failed to delete orphaned event:', taskId, error);
+						if (this.isRetryableError(error)) {
+							this.syncManager.queueOperation({
+								type: 'delete',
+								taskId,
+								eventId: syncInfo.eventId,
+								calendarId,
+							});
+						} else {
+							// Non-retryable - just remove from sync data
+							this.syncManager.removeSync(taskId);
+						}
 					}
-					this.syncManager.removeSync(taskId);
 				}
 			}
 
 			// Update sync timestamp and save
 			this.syncManager.updateLastSyncTime();
 			await this.saveSettings();
+			this.updateStatusBar();
 
 			// Report results
-			const hasChanges = created > 0 || updated > 0 || recreated > 0 || completed > 0 || deleted > 0 || failed > 0;
+			const hasChanges = created > 0 || updated > 0 || recreated > 0 || completed > 0 || deleted > 0 || failed > 0 || retryResult.succeeded > 0;
 			if (!silent || hasChanges) {
 				const parts: string[] = [];
+				if (retryResult.succeeded > 0) parts.push(`${retryResult.succeeded} retried`);
 				if (created > 0) parts.push(`${created} created`);
 				if (updated > 0) parts.push(`${updated} updated`);
 				if (recreated > 0) parts.push(`${recreated} recreated`);
@@ -271,9 +385,20 @@ export default class ChronosPlugin extends Plugin {
 					new Notice('Chronos: No tasks to sync');
 				}
 			}
-		} catch (error) {
+		} catch (error: any) {
 			console.error('Sync failed:', error);
-			if (!silent) new Notice(`Chronos: Sync failed - ${error}`);
+			if (!silent) {
+				const message = error?.message || String(error);
+				if (message.includes('Not authenticated') || message.includes('401')) {
+					new Notice('Chronos: Session expired. Please reconnect in Settings → Chronos.');
+				} else if (message.includes('403')) {
+					new Notice('Chronos: Permission denied. Try reconnecting your Google account.');
+				} else if (message.includes('network') || message.includes('fetch')) {
+					new Notice('Chronos: Network error. Check your internet connection.');
+				} else {
+					new Notice(`Chronos: Sync failed - ${message}`);
+				}
+			}
 		}
 	}
 
@@ -285,6 +410,84 @@ export default class ChronosPlugin extends Plugin {
 			return Intl.DateTimeFormat().resolvedOptions().timeZone;
 		}
 		return this.settings.timeZone;
+	}
+
+	/**
+	 * Check if an error is likely a network/temporary issue worth retrying
+	 */
+	isRetryableError(error: any): boolean {
+		const message = error?.message?.toLowerCase() || String(error).toLowerCase();
+		return message.includes('network') ||
+			message.includes('fetch') ||
+			message.includes('timeout') ||
+			message.includes('econnrefused') ||
+			message.includes('enotfound') ||
+			message.includes('503') ||
+			message.includes('429'); // Rate limited
+	}
+
+	/**
+	 * Retry pending operations from the queue
+	 */
+	async retryPendingOperations(): Promise<{ succeeded: number; failed: number }> {
+		const pending = this.syncManager.getPendingOperations();
+		if (pending.length === 0) return { succeeded: 0, failed: 0 };
+
+		const calendarId = this.settings.googleCalendarId;
+		const timeZone = this.getTimeZone();
+		let succeeded = 0;
+		let failed = 0;
+
+		for (const op of pending) {
+			try {
+				if (op.type === 'create' && op.taskData) {
+					// Reconstruct task from stored data
+					const task: ChronosTask = {
+						rawText: op.taskData.rawText,
+						title: op.taskData.title,
+						date: op.taskData.date,
+						time: op.taskData.time,
+						datetime: new Date(op.taskData.date + (op.taskData.time ? 'T' + op.taskData.time : '')),
+						isAllDay: op.taskData.isAllDay,
+						filePath: op.taskData.filePath,
+						fileName: op.taskData.filePath.split('/').pop() || '',
+						lineNumber: op.taskData.lineNumber,
+						isCompleted: false,
+						tags: [],
+					};
+
+					const event = await this.calendarApi.createEvent({
+						task,
+						calendarId,
+						durationMinutes: this.settings.defaultEventDurationMinutes,
+						reminderMinutes: this.settings.defaultReminderMinutes,
+						timeZone,
+					});
+					this.syncManager.recordSync(task, event.id, calendarId);
+					this.syncManager.removePendingOperation(op.taskId, op.type);
+					succeeded++;
+				} else if (op.type === 'delete' && op.eventId) {
+					await this.calendarApi.deleteEvent(calendarId, op.eventId);
+					this.syncManager.removePendingOperation(op.taskId, op.type);
+					succeeded++;
+				} else if (op.type === 'complete' && op.eventId) {
+					await this.calendarApi.markEventCompleted(calendarId, op.eventId, new Date());
+					this.syncManager.removePendingOperation(op.taskId, op.type);
+					succeeded++;
+				}
+			} catch (error) {
+				this.syncManager.incrementRetryCount(op.taskId, op.type);
+				failed++;
+			}
+		}
+
+		// Prune operations that have failed too many times
+		const pruned = this.syncManager.pruneFailedOperations(5);
+		if (pruned.length > 0) {
+			console.error('Chronos: Dropped operations after max retries:', pruned.length);
+		}
+
+		return { succeeded, failed };
 	}
 
 	/**
@@ -304,7 +507,6 @@ export default class ChronosPlugin extends Plugin {
 			await this.syncTasks(true);
 		}, intervalMs);
 
-		console.log(`Chronos: Automatic sync started (every ${this.settings.syncIntervalMinutes} minutes)`);
 	}
 
 	/**
@@ -314,7 +516,6 @@ export default class ChronosPlugin extends Plugin {
 		if (this.syncIntervalId !== null) {
 			window.clearInterval(this.syncIntervalId);
 			this.syncIntervalId = null;
-			console.log('Chronos: Automatic sync stopped');
 		}
 	}
 
@@ -603,142 +804,300 @@ class ChronosSettingTab extends PluginSettingTab {
 }
 
 /**
- * Modal to display scanned tasks
+ * Modal to display scanned tasks with sections for unsynced, synced, and completed
  */
 class TaskListModal extends Modal {
-	tasks: ChronosTask[];
+	plugin: ChronosPlugin;
+	unsyncedTasks: ChronosTask[] = [];
+	syncedTasks: ChronosTask[] = [];
+	completedTasks: ChronosTask[] = [];
+	completedSortBy: 'date' | 'name' = 'date';
 
-	constructor(app: App, tasks: ChronosTask[]) {
+	constructor(app: App, plugin: ChronosPlugin) {
 		super(app);
-		this.tasks = tasks;
+		this.plugin = plugin;
 	}
 
-	onOpen() {
+	async onOpen() {
 		const { contentEl } = this;
 		contentEl.empty();
 		contentEl.addClass('chronos-task-modal');
 
-		contentEl.createEl('h2', { text: 'Sync-Eligible Tasks' });
+		contentEl.createEl('h2', { text: 'Chronos Task Overview' });
 
-		if (this.tasks.length === 0) {
-			const emptyDiv = contentEl.createDiv({ cls: 'chronos-empty-state' });
-			emptyDiv.createEl('p', { text: 'No sync-eligible tasks found.' });
-			emptyDiv.createEl('p', {
-				text: 'Tasks need:',
-				cls: 'chronos-requirements-header'
-			});
-			const reqList = emptyDiv.createEl('ul');
-			reqList.createEl('li', { text: 'Uncompleted checkbox: - [ ]' });
-			reqList.createEl('li', { text: 'Date: 📅 YYYY-MM-DD' });
-			reqList.createEl('li', { text: 'Time (optional): ⏰ HH:mm' });
+		// Scan all tasks
+		const allTasks = await this.plugin.taskParser.scanVault(true);
 
-			emptyDiv.createEl('p', {
-				text: 'Examples:',
-				cls: 'chronos-requirements-header'
-			});
-			emptyDiv.createEl('p', {
-				text: '- [ ] Call dentist 📅 2026-01-15 ⏰ 14:00',
-				cls: 'chronos-example'
-			});
-			emptyDiv.createEl('p', {
-				text: '- [ ] Submit report 📅 2026-01-15 (all-day)',
-				cls: 'chronos-example'
-			});
-			emptyDiv.createEl('p', {
-				text: 'Use 🚫 to exclude a task from syncing.',
-				cls: 'chronos-hint'
+		// Separate into categories
+		this.unsyncedTasks = [];
+		this.syncedTasks = [];
+		this.completedTasks = allTasks.filter(t => t.isCompleted);
+
+		const uncompletedTasks = allTasks.filter(t => !t.isCompleted);
+		for (const task of uncompletedTasks) {
+			const taskId = this.plugin.syncManager.generateTaskId(task);
+			const syncInfo = this.plugin.syncManager.getSyncInfo(taskId);
+			if (syncInfo) {
+				this.syncedTasks.push(task);
+			} else {
+				this.unsyncedTasks.push(task);
+			}
+		}
+
+		// Sort synced tasks by date (soonest first)
+		this.syncedTasks.sort((a, b) => a.datetime.getTime() - b.datetime.getTime());
+
+		// Sort completed tasks by date initially
+		this.sortCompletedTasks();
+
+		this.renderContent();
+	}
+
+	sortCompletedTasks() {
+		if (this.completedSortBy === 'date') {
+			this.completedTasks.sort((a, b) => b.datetime.getTime() - a.datetime.getTime());
+		} else {
+			this.completedTasks.sort((a, b) => a.title.localeCompare(b.title));
+		}
+	}
+
+	renderContent() {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.addClass('chronos-task-modal');
+
+		contentEl.createEl('h2', { text: 'Chronos Task Overview' });
+
+		contentEl.createEl('p', {
+			text: 'Click any task to open it in the editor.',
+			cls: 'chronos-hint'
+		});
+
+		// Check if there are any tasks at all
+		const totalTasks = this.unsyncedTasks.length + this.syncedTasks.length + this.completedTasks.length;
+		if (totalTasks === 0) {
+			this.renderEmptyState(contentEl);
+			return;
+		}
+
+		// Section 1: Unsynced Tasks (ready to sync)
+		this.renderUnsyncedSection(contentEl);
+
+		// Section 2: Already Synced Tasks (collapsible)
+		this.renderSyncedSection(contentEl);
+
+		// Section 3: Completed Tasks (collapsible with sort)
+		this.renderCompletedSection(contentEl);
+	}
+
+	renderEmptyState(containerEl: HTMLElement) {
+		const emptyDiv = containerEl.createDiv({ cls: 'chronos-empty-state' });
+		emptyDiv.createEl('p', { text: 'No tasks with dates found.' });
+		emptyDiv.createEl('p', {
+			text: 'Tasks need:',
+			cls: 'chronos-requirements-header'
+		});
+		const reqList = emptyDiv.createEl('ul');
+		reqList.createEl('li', { text: 'Checkbox: - [ ] or - [x]' });
+		reqList.createEl('li', { text: 'Date: 📅 YYYY-MM-DD' });
+		reqList.createEl('li', { text: 'Time (optional): ⏰ HH:mm' });
+
+		emptyDiv.createEl('p', {
+			text: 'Example:',
+			cls: 'chronos-requirements-header'
+		});
+		emptyDiv.createEl('p', {
+			text: '- [ ] Call dentist 📅 2026-01-15 ⏰ 14:00',
+			cls: 'chronos-example'
+		});
+	}
+
+	renderUnsyncedSection(containerEl: HTMLElement) {
+		const section = containerEl.createDiv({ cls: 'chronos-section' });
+
+		const header = section.createDiv({ cls: 'chronos-section-header' });
+		header.createEl('h3', { text: `📤 Ready to Sync (${this.unsyncedTasks.length})` });
+
+		if (this.unsyncedTasks.length === 0) {
+			section.createEl('p', {
+				text: 'All tasks are synced!',
+				cls: 'chronos-empty-section'
 			});
 			return;
 		}
 
-		// Count all-day vs timed
-		const allDayCount = this.tasks.filter(t => t.isAllDay).length;
-		const timedCount = this.tasks.length - allDayCount;
+		section.createEl('p', {
+			text: 'These tasks will sync on the next auto or manual sync.',
+			cls: 'chronos-section-desc'
+		});
 
-		let countText = `Found ${this.tasks.length} task${this.tasks.length === 1 ? '' : 's'} to sync`;
-		if (allDayCount > 0 && timedCount > 0) {
-			countText += ` (${timedCount} timed, ${allDayCount} all-day)`;
-		} else if (allDayCount > 0) {
-			countText += ` (all-day)`;
+		const taskList = section.createDiv({ cls: 'chronos-task-list' });
+		for (const task of this.unsyncedTasks) {
+			this.renderTaskItem(taskList, task, 'unsynced');
 		}
-		countText += ':';
+	}
 
-		contentEl.createEl('p', {
-			text: countText,
-			cls: 'chronos-task-count'
-		});
+	renderSyncedSection(containerEl: HTMLElement) {
+		const section = containerEl.createDiv({ cls: 'chronos-section chronos-collapsible' });
 
-		contentEl.createEl('p', {
-			text: 'Click a task to open it in the editor.',
-			cls: 'chronos-hint'
-		});
+		const header = section.createDiv({ cls: 'chronos-section-header chronos-clickable' });
+		const arrow = header.createSpan({ cls: 'chronos-collapse-arrow', text: '▶' });
+		header.createEl('h3', { text: ` ✅ Already Synced (${this.syncedTasks.length})` });
 
-		const taskList = contentEl.createDiv({ cls: 'chronos-task-list' });
+		const content = section.createDiv({ cls: 'chronos-section-content chronos-collapsed' });
 
-		for (const task of this.tasks) {
-			const taskDiv = taskList.createDiv({ cls: 'chronos-task-item chronos-task-clickable' });
-
-			// Make the task clickable to open file at line
-			taskDiv.addEventListener('click', async () => {
-				const file = this.app.vault.getAbstractFileByPath(task.filePath);
-				if (file) {
-					const leaf = this.app.workspace.getLeaf(false);
-					await leaf.openFile(file as any);
-
-					// Jump to the line
-					const view = this.app.workspace.getActiveViewOfType(MarkdownView);
-					if (view) {
-						const editor = view.editor;
-						editor.setCursor({ line: task.lineNumber - 1, ch: 0 });
-						editor.scrollIntoView({
-							from: { line: task.lineNumber - 1, ch: 0 },
-							to: { line: task.lineNumber - 1, ch: 0 }
-						}, true);
-					}
-
-					this.close();
-				}
-			});
-
-			// Task title
-			taskDiv.createEl('div', {
-				text: task.title,
-				cls: 'chronos-task-title'
-			});
-
-			// Task metadata row 1: date/time
-			const meta = taskDiv.createDiv({ cls: 'chronos-task-meta' });
-
-			const dateStr = task.datetime.toLocaleDateString();
-
-			meta.createEl('span', {
-				text: `📅 ${dateStr}`,
-				cls: 'chronos-task-date'
-			});
-
-			if (task.isAllDay) {
-				meta.createEl('span', {
-					text: '📆 All day',
-					cls: 'chronos-task-allday'
-				});
+		header.addEventListener('click', () => {
+			const isCollapsed = content.hasClass('chronos-collapsed');
+			if (isCollapsed) {
+				content.removeClass('chronos-collapsed');
+				arrow.setText('▼');
 			} else {
-				const timeStr = task.datetime.toLocaleTimeString([], {
-					hour: '2-digit',
-					minute: '2-digit'
-				});
-				meta.createEl('span', {
-					text: `⏰ ${timeStr}`,
-					cls: 'chronos-task-time'
-				});
+				content.addClass('chronos-collapsed');
+				arrow.setText('▶');
 			}
+		});
 
-			// Task metadata row 2: file path and line
-			const fileMeta = taskDiv.createDiv({ cls: 'chronos-task-file-info' });
-			fileMeta.createEl('span', {
-				text: `📄 ${task.filePath}:${task.lineNumber}`,
-				cls: 'chronos-task-filepath'
+		if (this.syncedTasks.length === 0) {
+			content.createEl('p', {
+				text: 'No synced tasks yet.',
+				cls: 'chronos-empty-section'
+			});
+			return;
+		}
+
+		content.createEl('p', {
+			text: 'Sorted by date (soonest first).',
+			cls: 'chronos-section-desc'
+		});
+
+		const taskList = content.createDiv({ cls: 'chronos-task-list' });
+		for (const task of this.syncedTasks) {
+			this.renderTaskItem(taskList, task, 'synced');
+		}
+	}
+
+	renderCompletedSection(containerEl: HTMLElement) {
+		const section = containerEl.createDiv({ cls: 'chronos-section chronos-collapsible' });
+
+		const header = section.createDiv({ cls: 'chronos-section-header chronos-clickable' });
+		const arrow = header.createSpan({ cls: 'chronos-collapse-arrow', text: '▶' });
+		header.createEl('h3', { text: ` ☑️ Completed (${this.completedTasks.length})` });
+
+		const content = section.createDiv({ cls: 'chronos-section-content chronos-collapsed' });
+
+		header.addEventListener('click', () => {
+			const isCollapsed = content.hasClass('chronos-collapsed');
+			if (isCollapsed) {
+				content.removeClass('chronos-collapsed');
+				arrow.setText('▼');
+			} else {
+				content.addClass('chronos-collapsed');
+				arrow.setText('▶');
+			}
+		});
+
+		if (this.completedTasks.length === 0) {
+			content.createEl('p', {
+				text: 'No completed tasks.',
+				cls: 'chronos-empty-section'
+			});
+			return;
+		}
+
+		// Sort controls
+		const sortControls = content.createDiv({ cls: 'chronos-sort-controls' });
+		sortControls.createSpan({ text: 'Sort by: ' });
+
+		const dateBtn = sortControls.createEl('button', {
+			text: 'Date',
+			cls: this.completedSortBy === 'date' ? 'chronos-sort-active' : ''
+		});
+		const nameBtn = sortControls.createEl('button', {
+			text: 'Name',
+			cls: this.completedSortBy === 'name' ? 'chronos-sort-active' : ''
+		});
+
+		dateBtn.addEventListener('click', () => {
+			this.completedSortBy = 'date';
+			this.sortCompletedTasks();
+			this.renderContent();
+		});
+
+		nameBtn.addEventListener('click', () => {
+			this.completedSortBy = 'name';
+			this.sortCompletedTasks();
+			this.renderContent();
+		});
+
+		const taskList = content.createDiv({ cls: 'chronos-task-list' });
+		for (const task of this.completedTasks) {
+			this.renderTaskItem(taskList, task, 'completed');
+		}
+	}
+
+	renderTaskItem(containerEl: HTMLElement, task: ChronosTask, status: 'unsynced' | 'synced' | 'completed') {
+		const taskDiv = containerEl.createDiv({ cls: `chronos-task-item chronos-task-clickable chronos-task-${status}` });
+
+		// Make the task clickable to open file at line
+		taskDiv.addEventListener('click', async () => {
+			const file = this.app.vault.getAbstractFileByPath(task.filePath);
+			if (file) {
+				const leaf = this.app.workspace.getLeaf(false);
+				await leaf.openFile(file as any);
+
+				// Jump to the line
+				const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+				if (view) {
+					const editor = view.editor;
+					editor.setCursor({ line: task.lineNumber - 1, ch: 0 });
+					editor.scrollIntoView({
+						from: { line: task.lineNumber - 1, ch: 0 },
+						to: { line: task.lineNumber - 1, ch: 0 }
+					}, true);
+				}
+
+				this.close();
+			}
+		});
+
+		// Task title
+		taskDiv.createEl('div', {
+			text: task.title,
+			cls: 'chronos-task-title'
+		});
+
+		// Task metadata row 1: date/time
+		const meta = taskDiv.createDiv({ cls: 'chronos-task-meta' });
+
+		const dateStr = task.datetime.toLocaleDateString();
+
+		meta.createEl('span', {
+			text: `📅 ${dateStr}`,
+			cls: 'chronos-task-date'
+		});
+
+		if (task.isAllDay) {
+			meta.createEl('span', {
+				text: '📆 All day',
+				cls: 'chronos-task-allday'
+			});
+		} else {
+			const timeStr = task.datetime.toLocaleTimeString([], {
+				hour: '2-digit',
+				minute: '2-digit'
+			});
+			meta.createEl('span', {
+				text: `⏰ ${timeStr}`,
+				cls: 'chronos-task-time'
 			});
 		}
+
+		// Task metadata row 2: file path and line
+		const fileMeta = taskDiv.createDiv({ cls: 'chronos-task-file-info' });
+		fileMeta.createEl('span', {
+			text: `📄 ${task.filePath}:${task.lineNumber}`,
+			cls: 'chronos-task-filepath'
+		});
 	}
 
 	onClose() {

@@ -1,117 +1,125 @@
 # Chronos Handoff Log
 
 **Last Updated:** January 3, 2026
-**Current Phase:** Phase 3 Complete → Ready for Phase 4
-**Current Branch:** feature/phase-3-calendar-events (ready to merge)
+**Current Phase:** Phase 6 Complete - MVP Ready
+**Current Branch:** feature/phase-6-ux-polish
 **Version:** 0.1.0
 
 ---
 
-## Session: January 3, 2026 (Session 2) - Phases 1-3 Implementation
+## Session: January 3, 2026 (Session 3) - Phases 4, 5, 6 Implementation
 
 ### Session Summary
 
-Major implementation session. Completed Phases 1, 2, and 3 - plugin now has working OAuth, task parsing, and calendar event creation. Core functionality is working end-to-end.
+Major implementation session completing all MVP phases. Plugin now has full sync infrastructure with duplicate prevention, task lifecycle management (completion/deletion handling), and polished UX including status bar, offline queue, and redesigned task overview modal.
 
 ### What Was Done
 
 | Item | Details |
 |------|---------|
-| Project scaffold | TypeScript + esbuild setup, auto-deploy to vault |
-| OAuth 2.0 flow | Localhost callback server, token storage/refresh |
-| Task parsing | Parse `📅 YYYY-MM-DD` and `⏰ HH:mm` from tasks |
-| All-day events | Date-only tasks sync as all-day events |
-| No-sync marker | `🚫` emoji excludes tasks from sync |
-| Date/time input modal | Command to insert date/time markers |
-| Task scan modal | Shows eligible tasks with click-to-open |
-| Calendar API client | List calendars, create/update/delete events |
-| Calendar selection | Dropdown in settings to choose target calendar |
-| Manual sync command | "Sync tasks to Google Calendar now" |
-| Event creation | Timed and all-day events with reminders |
+| **Phase 4: Sync Infrastructure** | |
+| Task ID generation | Hash-based (file path + title + date) |
+| Sync data structure | Task ID → Event ID mapping with content hash |
+| Content hashing | Detect task changes for updates |
+| Change detection | Compare current vs synced state |
+| Event update API | Update existing events when tasks change |
+| Interval-based sync | Auto-sync every N minutes (configurable) |
+| External deletion detection | Recreate events deleted in Google Calendar |
+| **Phase 5: Task Lifecycle** | |
+| Completion behavior setting | Delete or mark events as completed |
+| Mark complete feature | Appends "- Completed MM-DD-YYYY, HH:mm" to event title |
+| Delete on complete | Removes event from calendar |
+| Orphan cleanup | Delete events when tasks are deleted from vault |
+| **Phase 6: Polish & UX** | |
+| Console log cleanup | Removed debug logging |
+| Error notifications | Actionable messages with directions |
+| Status bar indicator | Shows synced count, pending, last sync time |
+| Offline queue | Failed operations queued and auto-retried |
+| README.md | Full user documentation |
+| LICENSE | MIT License |
+| Task overview modal | Redesigned with 3 sections (unsynced/synced/completed) |
+| AI task format docs | Updated CLAUDE.md and created GEMINI.md |
 
 ### Key Decisions Made
 
 | Decision | Choice | Rationale |
 |----------|--------|-----------|
-| Time input | `⏰ HH:mm` (Chronos-specific) | Tasks plugin doesn't have native time |
-| No-sync marker | `🚫` emoji | Simple, visual, easy to add |
-| Date-only tasks | All-day events | More useful than requiring time |
-| Input method | Command + modal | EditorSuggest `@cal` trigger didn't work reliably |
-| OAuth scope | `calendar` (full) | `calendar.events` couldn't list calendars |
+| Task ID stability | Hash of filePath + title + date | Survives line number changes |
+| Completion default | Mark as completed (keep event) | Historical record preferred |
+| External deletion | Recreate events | Ensures tasks always have reminders |
+| Offline retry limit | 5 attempts | Prevents infinite retry loops |
 
 ### Files Created/Modified
 
 | File | Purpose |
 |------|---------|
-| `main.ts` | Main plugin with settings, commands, modals |
-| `src/googleAuth.ts` | OAuth 2.0 flow with localhost callback |
-| `src/taskParser.ts` | Parse tasks with dates/times from vault |
-| `src/googleCalendar.ts` | Google Calendar API client |
-| `src/dateTimeModal.ts` | Modal for inserting date/time markers |
-| `styles.css` | Plugin styling |
-| `package.json`, `tsconfig.json`, `esbuild.config.mjs` | Build configuration |
+| `src/syncManager.ts` | NEW - Task tracking, content hashing, offline queue |
+| `main.ts` | Sync logic, status bar, improved modal |
+| `src/googleCalendar.ts` | Added eventExists, markEventCompleted methods |
+| `src/taskParser.ts` | Added includeCompleted parameter |
+| `styles.css` | Collapsible sections, sort controls, status styling |
+| `README.md` | NEW - Full user documentation |
+| `LICENSE` | NEW - MIT License |
+| `CLAUDE.md` | Added task format section for AI assistants |
+| `GEMINI.md` | NEW - Task format for Gemini AI |
 
 ### Known Issues / Technical Debt
 
 | Item | Priority | Notes |
 |------|----------|-------|
-| EditorSuggest `@cal` trigger | Low | Didn't work - onTrigger not called on keystrokes. Revisit for marketplace release |
-| Debug console.logs | Low | Some debug logging in googleCalendar.ts - remove before release |
-| Duplicate events on re-sync | High | No tracking yet - Phase 4 will fix |
+| EditorSuggest `@cal` trigger | Low | Revisit for marketplace release |
+| Accidental completion edge case | Low | Unchecking creates duplicate (user can delete manually) |
+| OAuth verification | Required | Need to verify with Google before public release |
 
-### Remaining Open Questions
+### Resolved Issues
 
-1. **Conflict detection:** What if user manually creates event with same title/time?
-2. **Offline handling:** Queue changes when offline, sync when back online?
+| Item | Resolution |
+|------|------------|
+| Duplicate events on re-sync | Fixed - Task ID tracking prevents duplicates |
+| Debug console.logs | Removed |
+| Offline handling | Implemented - Queue with auto-retry |
 
 ---
 
 ## Next Session Prompt
 
 ```
-Chronos - v0.1.0 → Phase 4 Sync Infrastructure
+Chronos - v0.1.0 MVP Complete
 
 **Directory:** C:\Users\bwales\projects\obsidian-plugins\chronos\
 **Deploy to:** G:\My Drive\IT\Obsidian Vault\My Notebooks\.obsidian\plugins\chronos\
 **GitHub:** https://github.com/thuban87/Chronos (public)
-**Current branch:** main (merge phase-3 first, then create feature/phase-4-sync-infrastructure)
+**Current branch:** feature/phase-6-ux-polish (ready to merge to main)
 **Version:** 0.1.0
 
 **Docs:**
 - docs\Handoff Log.md - START HERE for context
 - docs\ADR-001-Architecture.md - Core architecture
 - docs\ADR Priority List - Chronos.md - Feature roadmap
-- CLAUDE.md - Working guidelines
+- CLAUDE.md - Working guidelines + task format
+- README.md - User documentation
 
-**Last Session:** January 3, 2026 - Phases 1-3 Implementation
-- OAuth 2.0 working (full calendar scope)
-- Task parsing with 📅 dates and ⏰ times
-- All-day events for date-only tasks
-- 🚫 no-sync marker working
-- Calendar selection dropdown in settings
-- Manual sync creates events successfully
-- Click-to-open in task scan modal
+**CURRENT STATE: MVP COMPLETE**
 
-**CURRENT STATE:**
-- Core sync works! Tasks create events in Google Calendar
-- BUT: No duplicate prevention - re-running sync creates duplicate events
-- Need Phase 4 to track synced tasks
+All core features working:
+- OAuth 2.0 authentication with Google Calendar
+- Task parsing (📅 dates, ⏰ times, 🚫 no-sync)
+- Event creation (timed and all-day)
+- Duplicate prevention with content hashing
+- Change detection and event updates
+- Automatic interval-based sync
+- External deletion detection (recreates events)
+- Task completion handling (mark or delete)
+- Orphan cleanup (deleted tasks)
+- Status bar with sync info
+- Offline queue with auto-retry
+- Redesigned task overview modal
 
-**PRIORITY: Phase 4 - Sync Infrastructure**
-
-| Task | Status |
-|------|--------|
-| Task ID generation (hash-based) | Pending |
-| Sync data structure (Task ID → Event ID mapping) | Pending |
-| Content hashing (detect task changes) | Pending |
-| Interval-based sync trigger | Pending |
-| Change detection (compare current vs synced) | Pending |
-| Event update API call | Pending |
-
-**Phase 4 Deliverable:**
-- Syncing doesn't create duplicates
-- Editing a task updates the calendar event
-- Sync can run automatically on interval
+**NEXT STEPS (Post-MVP):**
+1. Google OAuth verification for public release
+2. Test on Mac and mobile
+3. Submit to Obsidian Community Plugins
+4. Consider future features (two-way sync, daily agenda)
 
 **Build & Deploy:**
 npm run build → Reload Obsidian (Ctrl+P → "Reload app without saving")
@@ -120,6 +128,7 @@ npm run build → Reload Obsidian (Ctrl+P → "Reload app without saving")
 - Ctrl+P → "Chronos: Scan vault for sync-eligible tasks"
 - Ctrl+P → "Chronos: Sync tasks to Google Calendar now"
 - Ctrl+P → "Chronos: Insert date/time for task"
+- Click status bar to sync
 ```
 
 ---
@@ -153,6 +162,20 @@ Ctrl+P → "Reload app without saving" OR toggle plugin off/on
 
 ## Archived Sessions
 
+### Session: January 3, 2026 (Session 2) - Phases 1-3 Implementation
+
+Major implementation session. Completed Phases 1, 2, and 3 - plugin now has working OAuth, task parsing, and calendar event creation.
+
+**What Was Done:**
+- Project scaffold (TypeScript + esbuild)
+- OAuth 2.0 flow with localhost callback
+- Task parsing (dates, times, no-sync marker)
+- All-day events for date-only tasks
+- Calendar API client
+- Calendar selection in settings
+- Manual sync command
+- Event creation with reminders
+
 ### Session: January 3, 2026 (Session 1) - Project Planning
 
 Initial planning session. Discussed plugin concept, evaluated difficulty, made architectural decisions, and created project documentation.
@@ -162,7 +185,7 @@ Initial planning session. Discussed plugin concept, evaluated difficulty, made a
 - Chose Tasks plugin syntax (`📅`, `⏰`)
 - Chose interval-based sync (10 min) over on-save
 - Decided on plugin data store with content hashing for duplicates
-- Created all project documentation (ADR-001, Project Summary, Handoff Log, ADR Priority List, CLAUDE.md)
+- Created all project documentation
 
 **Key Decisions:**
 - Name: Chronos (Greek god of time)

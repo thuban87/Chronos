@@ -131,3 +131,107 @@
     padding-top: 1em;
     border-top: 1px solid var(--background-modifier-border);
 }
+
+/* Task Overview Modal - Sections */
+.chronos-section {
+    margin-bottom: 1.5em;
+}
+
+.chronos-section-header {
+    display: flex;
+    align-items: center;
+    gap: 0.25em;
+    margin-bottom: 0.5em;
+}
+
+.chronos-section-header h3 {
+    margin: 0;
+    font-size: 1.1em;
+}
+
+.chronos-section-desc {
+    font-size: 0.85em;
+    color: var(--text-muted);
+    margin-bottom: 0.75em;
+    margin-top: 0;
+}
+
+.chronos-empty-section {
+    font-size: 0.9em;
+    color: var(--text-muted);
+    font-style: italic;
+    padding: 0.5em 0;
+}
+
+/* Collapsible sections */
+.chronos-clickable {
+    cursor: pointer;
+    user-select: none;
+}
+
+.chronos-clickable:hover {
+    color: var(--text-accent);
+}
+
+.chronos-collapse-arrow {
+    font-size: 0.8em;
+    width: 1em;
+    display: inline-block;
+}
+
+.chronos-collapsed {
+    display: none;
+}
+
+/* Sort controls */
+.chronos-sort-controls {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    margin-bottom: 0.75em;
+    font-size: 0.85em;
+    color: var(--text-muted);
+}
+
+.chronos-sort-controls button {
+    padding: 2px 8px;
+    font-size: 0.85em;
+    border-radius: 4px;
+    background: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    cursor: pointer;
+}
+
+.chronos-sort-controls button:hover {
+    background: var(--background-modifier-hover);
+}
+
+.chronos-sort-controls button.chronos-sort-active {
+    background: var(--interactive-accent);
+    color: var(--text-on-accent);
+    border-color: var(--interactive-accent);
+}
+
+/* Task status-specific styling */
+.chronos-task-unsynced {
+    border-left-color: var(--text-warning);
+}
+
+.chronos-task-synced {
+    border-left-color: var(--text-success);
+}
+
+.chronos-task-completed {
+    border-left-color: var(--text-muted);
+    opacity: 0.8;
+}
+
+.chronos-task-completed .chronos-task-title {
+    text-decoration: line-through;
+    color: var(--text-muted);
+}
+
+/* Status bar */
+.chronos-status-bar {
+    cursor: pointer;
+}

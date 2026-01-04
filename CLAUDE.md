@@ -4,6 +4,45 @@
 **Last Updated:** January 3, 2026
 
 ---
+
+## Creating Tasks for Google Calendar Sync
+
+Chronos syncs Obsidian tasks to Google Calendar. When creating tasks for Brad that need calendar reminders, use this exact format:
+
+### Task Format
+```markdown
+- [ ] Task description 📅 YYYY-MM-DD ⏰ HH:mm
+```
+
+### Examples
+```markdown
+- [ ] Call dentist 📅 2026-01-15 ⏰ 14:00
+- [ ] Submit report 📅 2026-01-20 ⏰ 09:30
+- [ ] Team meeting 📅 2026-01-10 ⏰ 15:00
+```
+
+### All-Day Events (no specific time)
+```markdown
+- [ ] Pay rent 📅 2026-02-01
+- [ ] Birthday reminder 📅 2026-03-15
+```
+
+### Exclude from Calendar Sync
+Add 🚫 to prevent syncing:
+```markdown
+- [ ] Personal note 📅 2026-01-15 🚫
+```
+
+### Key Rules
+- **Date format:** `📅 YYYY-MM-DD` (required for sync)
+- **Time format:** `⏰ HH:mm` (24-hour, optional - omit for all-day events)
+- **Checkbox:** Must be unchecked `- [ ]` to sync
+- **No-sync:** Add `🚫` emoji to exclude from calendar
+
+Tasks without the 📅 emoji will NOT sync to Google Calendar.
+
+---
+
 ## Important!
 
 Do not perform any git commands. USer will perform all git commands themselves. Do suggest git commit titles/description when finished with testing and updating documentation, or when asked. Also, remind the user when starting a new task to check github and make sure we're on a new branch.
