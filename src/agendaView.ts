@@ -1,0 +1,368 @@
+import { ItemView, WorkspaceLeaf } from 'obsidian';
+import { GoogleEvent } from './googleCalendar';
+import { SyncedTaskInfo } from './syncManager';
+
+export const AGENDA_VIEW_TYPE = 'chronos-agenda-view';
+
+export interface AgendaViewDeps {
+    isAuthenticated: () => boolean;
+    hasCalendarSelected: () => boolean;
+    fetchEventsForDate: (date: Date) => Promise<GoogleEvent[]>;
+    fetchEventColors: () => Promise<Record<string, string>>;
+    getCalendarColor: () => Promise<string | null>;
+    getSyncedTasks: () => Record<string, SyncedTaskInfo>;
+    getTimeZone: () => string;
+    openFile: (filePath: string, lineNumber: number) => Promise<void>;
+}
+
+export class AgendaView extends ItemView {
+    private deps: AgendaViewDeps;
+    private events: GoogleEvent[] = [];
+    private isLoading: boolean = false;
+    private lastError: string | null = null;
+    private refreshIntervalId: number | null = null;
+    private refreshIntervalMs: number = 600000; // 10 minutes default
+    private currentDate: Date = new Date();
+    private colorPalette: Record<string, string> = {};
+    private calendarColor: string | null = null;
+    private colorsLoaded: boolean = false;
+
+    constructor(leaf: WorkspaceLeaf, deps: AgendaViewDeps) {
+        super(leaf);
+        this.deps = deps;
+        // Reset to today
+        this.currentDate = this.getStartOfDay(new Date());
+    }
+
+    getViewType(): string {
+        return AGENDA_VIEW_TYPE;
+    }
+
+    getDisplayText(): string {
+        return "Agenda";
+    }
+
+    getIcon(): string {
+        return 'calendar-clock';
+    }
+
+    async onOpen(): Promise<void> {
+        await this.loadColors();
+        await this.refresh();
+        this.startAutoRefresh();
+    }
+
+    async onClose(): Promise<void> {
+        this.stopAutoRefresh();
+    }
+
+    setRefreshInterval(ms: number): void {
+        this.refreshIntervalMs = ms;
+        // Restart with new interval if already running
+        if (this.refreshIntervalId !== null) {
+            this.stopAutoRefresh();
+            this.startAutoRefresh();
+        }
+    }
+
+    /**
+     * Force reload of colors (e.g., when calendar selection changes)
+     */
+    reloadColors(): void {
+        this.colorsLoaded = false;
+        this.calendarColor = null;
+    }
+
+    private startAutoRefresh(): void {
+        if (this.refreshIntervalId !== null) return;
+
+        this.refreshIntervalId = window.setInterval(() => {
+            this.refresh();
+        }, this.refreshIntervalMs);
+    }
+
+    private stopAutoRefresh(): void {
+        if (this.refreshIntervalId !== null) {
+            window.clearInterval(this.refreshIntervalId);
+            this.refreshIntervalId = null;
+        }
+    }
+
+    private getStartOfDay(date: Date): Date {
+        return new Date(date.getFullYear(), date.getMonth(), date.getDate());
+    }
+
+    private async loadColors(): Promise<void> {
+        if (this.colorsLoaded) return;
+
+        try {
+            if (this.deps.isAuthenticated()) {
+                // Load event color palette and calendar's default color in parallel
+                const [palette, calColor] = await Promise.all([
+                    this.deps.fetchEventColors(),
+                    this.deps.getCalendarColor()
+                ]);
+                this.colorPalette = palette;
+                this.calendarColor = calColor;
+                this.colorsLoaded = true;
+            }
+        } catch (error) {
+            console.error('Chronos: Failed to load colors:', error);
+            // Continue without colors
+        }
+    }
+
+    async refresh(): Promise<void> {
+        this.isLoading = true;
+        this.lastError = null;
+        this.render();
+
+        try {
+            if (!this.deps.isAuthenticated()) {
+                this.lastError = 'Not connected to Google Calendar';
+                this.events = [];
+            } else if (!this.deps.hasCalendarSelected()) {
+                this.lastError = 'No calendar selected';
+                this.events = [];
+            } else {
+                // Load colors if not loaded yet
+                if (!this.colorsLoaded) {
+                    await this.loadColors();
+                }
+                this.events = await this.deps.fetchEventsForDate(this.currentDate);
+            }
+        } catch (error: any) {
+            console.error('Chronos: Failed to fetch agenda events:', error);
+            this.lastError = error?.message || 'Failed to fetch events';
+            this.events = [];
+        }
+
+        this.isLoading = false;
+        this.render();
+    }
+
+    private goToPreviousDay(): void {
+        const newDate = new Date(this.currentDate);
+        newDate.setDate(newDate.getDate() - 1);
+        this.currentDate = newDate;
+        this.refresh();
+    }
+
+    private goToNextDay(): void {
+        const newDate = new Date(this.currentDate);
+        newDate.setDate(newDate.getDate() + 1);
+        this.currentDate = newDate;
+        this.refresh();
+    }
+
+    private goToToday(): void {
+        this.currentDate = this.getStartOfDay(new Date());
+        this.refresh();
+    }
+
+    private isToday(): boolean {
+        const today = this.getStartOfDay(new Date());
+        return this.currentDate.getTime() === today.getTime();
+    }
+
+    private render(): void {
+        const container = this.containerEl.children[1];
+        container.empty();
+        container.addClass('chronos-agenda-container');
+
+        // Header with navigation
+        const header = container.createDiv({ cls: 'chronos-agenda-header' });
+
+        // Navigation row
+        const navRow = header.createDiv({ cls: 'chronos-agenda-nav-row' });
+
+        const prevBtn = navRow.createEl('button', {
+            cls: 'chronos-agenda-nav-btn',
+            attr: { 'aria-label': 'Previous day' }
+        });
+        prevBtn.innerHTML = '‹';
+        prevBtn.addEventListener('click', () => this.goToPreviousDay());
+
+        const dateStr = this.currentDate.toLocaleDateString(undefined, {
+            weekday: 'long',
+            month: 'short',
+            day: 'numeric'
+        });
+
+        const dateLabel = navRow.createEl('span', {
+            text: dateStr,
+            cls: 'chronos-agenda-date'
+        });
+
+        // Make date clickable to go to today if not already on today
+        if (!this.isToday()) {
+            dateLabel.addClass('chronos-agenda-date-clickable');
+            dateLabel.setAttr('aria-label', 'Go to today');
+            dateLabel.addEventListener('click', () => this.goToToday());
+        }
+
+        const nextBtn = navRow.createEl('button', {
+            cls: 'chronos-agenda-nav-btn',
+            attr: { 'aria-label': 'Next day' }
+        });
+        nextBtn.innerHTML = '›';
+        nextBtn.addEventListener('click', () => this.goToNextDay());
+
+        // Refresh button row
+        const actionRow = header.createDiv({ cls: 'chronos-agenda-action-row' });
+
+        if (!this.isToday()) {
+            const todayBtn = actionRow.createEl('button', {
+                cls: 'chronos-agenda-today-btn',
+                text: 'Today'
+            });
+            todayBtn.addEventListener('click', () => this.goToToday());
+        }
+
+        const refreshBtn = actionRow.createEl('button', {
+            cls: 'chronos-agenda-refresh-btn',
+            attr: { 'aria-label': 'Refresh agenda' }
+        });
+        refreshBtn.innerHTML = '↻';
+        refreshBtn.addEventListener('click', () => this.refresh());
+
+        // Loading state
+        if (this.isLoading) {
+            container.createDiv({ cls: 'chronos-agenda-loading', text: 'Loading...' });
+            return;
+        }
+
+        // Error state
+        if (this.lastError) {
+            const errorDiv = container.createDiv({ cls: 'chronos-agenda-error' });
+            errorDiv.createEl('p', { text: this.lastError });
+            if (this.lastError.includes('Not connected')) {
+                errorDiv.createEl('p', {
+                    text: 'Go to Settings → Chronos to connect.',
+                    cls: 'chronos-agenda-error-hint'
+                });
+            }
+            return;
+        }
+
+        // Empty state
+        if (this.events.length === 0) {
+            const dayLabel = this.isToday() ? 'today' : 'this day';
+            container.createDiv({
+                cls: 'chronos-agenda-empty',
+                text: `No events ${dayLabel}`
+            });
+            return;
+        }
+
+        // Events list
+        const eventsList = container.createDiv({ cls: 'chronos-agenda-events' });
+
+        // Build a reverse lookup: eventId → taskInfo (for finding source notes)
+        const syncedTasks = this.deps.getSyncedTasks();
+        const eventIdToTask: Record<string, SyncedTaskInfo> = {};
+        for (const [taskId, info] of Object.entries(syncedTasks)) {
+            eventIdToTask[info.eventId] = info;
+        }
+
+        for (const event of this.events) {
+            this.renderEventCard(eventsList, event, eventIdToTask[event.id]);
+        }
+    }
+
+    private getEventColor(event: GoogleEvent): string | null {
+        // First check if event has a direct background color (individually colored event)
+        if (event.backgroundColor) {
+            return event.backgroundColor;
+        }
+
+        // Then check if we can map the colorId (individually colored event)
+        if (event.colorId && this.colorPalette[event.colorId]) {
+            return this.colorPalette[event.colorId];
+        }
+
+        // Fall back to the calendar's default color
+        if (this.calendarColor) {
+            return this.calendarColor;
+        }
+
+        return null;
+    }
+
+    private renderEventCard(
+        container: HTMLElement,
+        event: GoogleEvent,
+        syncInfo?: SyncedTaskInfo
+    ): void {
+        const card = container.createDiv({ cls: 'chronos-agenda-card' });
+
+        // Apply event color as border
+        const eventColor = this.getEventColor(event);
+        if (eventColor) {
+            card.style.borderLeftColor = eventColor;
+        }
+
+        // Time display
+        const timeDiv = card.createDiv({ cls: 'chronos-agenda-card-time' });
+
+        if (event.start.date) {
+            // All-day event
+            timeDiv.setText('All day');
+            timeDiv.addClass('chronos-agenda-allday');
+        } else if (event.start.dateTime) {
+            const startTime = new Date(event.start.dateTime);
+            const endTime = event.end.dateTime ? new Date(event.end.dateTime) : null;
+
+            const startStr = startTime.toLocaleTimeString(undefined, {
+                hour: 'numeric',
+                minute: '2-digit'
+            });
+
+            if (endTime) {
+                const endStr = endTime.toLocaleTimeString(undefined, {
+                    hour: 'numeric',
+                    minute: '2-digit'
+                });
+                timeDiv.setText(`${startStr} - ${endStr}`);
+            } else {
+                timeDiv.setText(startStr);
+            }
+        }
+
+        // Event content
+        const contentDiv = card.createDiv({ cls: 'chronos-agenda-card-content' });
+
+        // Title (clickable to Google Calendar)
+        const titleDiv = contentDiv.createDiv({ cls: 'chronos-agenda-card-title' });
+
+        if (event.htmlLink) {
+            const titleLink = titleDiv.createEl('a', {
+                text: event.summary,
+                href: event.htmlLink,
+                cls: 'chronos-agenda-gcal-link'
+            });
+            titleLink.setAttr('target', '_blank');
+            titleLink.setAttr('rel', 'noopener');
+        } else {
+            titleDiv.setText(event.summary);
+        }
+
+        // Source note link (smaller, secondary)
+        if (syncInfo) {
+            const sourceDiv = contentDiv.createDiv({ cls: 'chronos-agenda-card-source' });
+            const sourceLink = sourceDiv.createEl('a', {
+                cls: 'chronos-agenda-source-link'
+            });
+
+            // Show just the filename, not full path
+            const fileName = syncInfo.filePath.split('/').pop() || syncInfo.filePath;
+            sourceLink.setText(`📄 ${fileName}:${syncInfo.lineNumber}`);
+            sourceLink.setAttr('aria-label', `Open ${syncInfo.filePath} at line ${syncInfo.lineNumber}`);
+
+            sourceLink.addEventListener('click', async (e) => {
+                e.preventDefault();
+                await this.deps.openFile(syncInfo.filePath, syncInfo.lineNumber);
+            });
+        }
+    }
+}

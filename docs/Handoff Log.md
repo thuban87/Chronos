@@ -1,9 +1,58 @@
 # Chronos Handoff Log
 
 **Last Updated:** January 3, 2026
-**Current Phase:** Active Development - Phases 7-9
-**Current Branch:** main
+**Current Phase:** Active Development - Phases 8-9
+**Current Branch:** feature/phase-7-qol-upgrades-1
 **Version:** 0.1.0
+
+---
+
+## Session: January 3, 2026 (Session 5) - Phase 7 Complete: Agenda Sidebar & Timezone
+
+### Session Summary
+
+Completed Phase 7 with the agenda sidebar (from previous session) and the timezone setting. Users can now view all their Google Calendar events in a sidebar and explicitly configure their timezone.
+
+### What Was Done
+
+| Item | Details |
+|------|---------|
+| **Daily Agenda Sidebar (Phase 7.1)** | |
+| Agenda ItemView | New `src/agendaView.ts` with sidebar view showing day's events |
+| Day navigation | Prev/next buttons, clickable date to return to today |
+| Event colors | Fetches Google Calendar color palette, applies to event cards |
+| Event links | Google Calendar link (prominent) + source note link (for Chronos tasks) |
+| Auto-refresh | Configurable interval (default 10 min) |
+| Command | "Chronos: Toggle today's agenda sidebar" |
+| **Timezone Setting (Phase 7.2)** | |
+| Timezone dropdown | Added to Sync Settings section |
+| System Local option | Uses `Intl.DateTimeFormat().resolvedOptions().timeZone` |
+| IANA timezones | 35+ common timezones organized by region (Americas, Europe, Asia, Pacific, UTC) |
+| Live refresh | Agenda sidebar refreshes when timezone changed |
+
+### Files Created/Modified
+
+| File | Changes |
+|------|---------|
+| `src/agendaView.ts` | NEW - Sidebar ItemView for daily agenda |
+| `src/googleCalendar.ts` | Added listEvents(), getEventColors(), colorId/backgroundColor to GoogleEvent |
+| `main.ts` | View registration, fetchEventsForDate(), timezone dropdown in settings, agenda refresh interval setting |
+| `styles.css` | Agenda sidebar styling |
+
+### Key Decisions Made
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Agenda shows ALL events | Not just Chronos-synced | Users want to see their full day at a glance |
+| Timezone list | 35 common IANA zones | Balance between comprehensive and not overwhelming |
+| System Local default | Yes | Most users want events in their local time |
+
+### Testing Notes
+
+- Toggle sidebar: Ctrl+P → "Chronos: Toggle today's agenda sidebar"
+- Change timezone in Settings → Chronos → Sync Settings → Timezone
+- Verify events display in correct timezone
+- Verify new events are created with correct timezone
 
 ---
 
@@ -158,22 +207,22 @@ Major implementation session completing all MVP phases. Plugin now has full sync
 ```
 Chronos - Active Development
 
-**Directory:** C:\Users\bwales\projects\obsidian-plugins\chronos\
+**Directory:** C:\Users\bwales\projects\obsidian-plugins\Chronos
 **Deploy to:** G:\My Drive\IT\Obsidian Vault\My Notebooks\.obsidian\plugins\chronos\
 **GitHub:** https://github.com/thuban87/Chronos (public)
-**Current branch:** main
+**Current branch:** feature/phase-7-qol-upgrades-1 (or main after merge)
 **Version:** 0.1.0
 
 **Docs:**
 - docs\Handoff Log.md - START HERE for context
 - docs\ADR-001-Architecture.md - Core architecture
-- docs\ADR Priority List - Chronos.md - Feature roadmap (Phases 7-9 next)
+- docs\ADR Priority List - Chronos.md - Feature roadmap (Phases 8-9 next)
 - CLAUDE.md - Working guidelines + task format
 - README.md - User documentation with Google Cloud setup
 
-**CURRENT STATE: MVP COMPLETE - CONTINUING DEVELOPMENT**
+**CURRENT STATE: PHASE 7 COMPLETE**
 
-Core features complete:
+All features through Phase 7:
 - User-provided OAuth credentials (each user creates own Google Cloud project)
 - Task parsing (📅 dates, ⏰ times, 🚫 no-sync)
 - Event creation (timed and all-day)
@@ -186,9 +235,10 @@ Core features complete:
 - Status bar with sync info
 - Offline queue with auto-retry
 - Performance optimized (metadataCache)
+- Daily agenda sidebar with day navigation and event colors
+- Timezone setting (System Local + 35 IANA timezones)
 
 **NEXT PHASES TO IMPLEMENT:**
-- Phase 7: Daily agenda sidebar + Timezone setting
 - Phase 8: Multi-calendar support (tag-based routing)
 - Phase 9: Sync log/history + Per-task reminder override
 
@@ -196,6 +246,7 @@ Core features complete:
 npm run build → Reload Obsidian (Ctrl+P → "Reload app without saving")
 
 **Test Commands:**
+- Ctrl+P → "Chronos: Toggle today's agenda sidebar"
 - Ctrl+P → "Chronos: Scan vault for sync-eligible tasks"
 - Ctrl+P → "Chronos: Sync tasks to Google Calendar now"
 - Ctrl+P → "Chronos: Insert date/time for task" (or Ctrl+Shift+D)

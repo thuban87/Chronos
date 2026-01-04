@@ -16,6 +16,10 @@ export interface GoogleEvent {
     description?: string;
     start: { dateTime?: string; date?: string; timeZone?: string };
     end: { dateTime?: string; date?: string; timeZone?: string };
+    htmlLink?: string;
+    status?: string;
+    colorId?: string;
+    backgroundColor?: string;
     reminders?: {
         useDefault: boolean;
         overrides?: Array<{ method: string; minutes: number }>;
@@ -78,6 +82,107 @@ export class GoogleCalendarApi {
         } catch (error) {
             console.error('Chronos: listCalendars error:', error);
             throw error;
+        }
+    }
+
+    /**
+     * Fetch events for a specific date range
+     * @param calendarId The calendar to fetch from
+     * @param timeMin Start of range (inclusive)
+     * @param timeMax End of range (exclusive)
+     * @param timeZone IANA timezone string
+     */
+    async listEvents(calendarId: string, timeMin: Date, timeMax: Date, timeZone: string): Promise<GoogleEvent[]> {
+        const token = await this.getAccessToken();
+
+        if (!token) {
+            throw new Error('Not authenticated');
+        }
+
+        try {
+            // Format dates as RFC3339
+            const timeMinStr = timeMin.toISOString();
+            const timeMaxStr = timeMax.toISOString();
+
+            const params = new URLSearchParams({
+                timeMin: timeMinStr,
+                timeMax: timeMaxStr,
+                timeZone: timeZone,
+                singleEvents: 'true', // Expand recurring events
+                orderBy: 'startTime',
+                maxResults: '250', // Reasonable limit for a day
+            });
+
+            const response = await requestUrl({
+                url: `${CALENDAR_API_BASE}/calendars/${encodeURIComponent(calendarId)}/events?${params.toString()}`,
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                },
+            });
+
+            if (response.status !== 200) {
+                console.error('Chronos: listEvents error response:', response.json);
+                throw new Error(`Failed to fetch events: ${response.status}`);
+            }
+
+            const events: GoogleEvent[] = (response.json.items || [])
+                .filter((event: any) => event.status !== 'cancelled')
+                .map((event: any) => ({
+                    id: event.id,
+                    summary: event.summary || '(No title)',
+                    description: event.description,
+                    start: event.start,
+                    end: event.end,
+                    htmlLink: event.htmlLink,
+                    status: event.status,
+                    colorId: event.colorId,
+                    backgroundColor: event.backgroundColor,
+                }));
+
+            return events;
+        } catch (error) {
+            console.error('Chronos: listEvents error:', error);
+            throw error;
+        }
+    }
+
+    /**
+     * Fetch the color palette for Google Calendar
+     * Returns a map of colorId -> background color
+     */
+    async getEventColors(): Promise<Record<string, string>> {
+        const token = await this.getAccessToken();
+
+        if (!token) {
+            throw new Error('Not authenticated');
+        }
+
+        try {
+            const response = await requestUrl({
+                url: `${CALENDAR_API_BASE}/colors`,
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                },
+            });
+
+            if (response.status !== 200) {
+                throw new Error(`Failed to fetch colors: ${response.status}`);
+            }
+
+            const colorMap: Record<string, string> = {};
+
+            // Event colors
+            if (response.json.event) {
+                for (const [id, color] of Object.entries(response.json.event)) {
+                    colorMap[id] = (color as any).background;
+                }
+            }
+
+            return colorMap;
+        } catch (error) {
+            console.error('Chronos: getEventColors error:', error);
+            // Return empty map on error - we'll fall back to default colors
+            return {};
         }
     }
 

@@ -1,9 +1,10 @@
-import { App, Modal, Plugin, PluginSettingTab, Setting, Notice, MarkdownView } from 'obsidian';
+import { App, Modal, Plugin, PluginSettingTab, Setting, Notice, MarkdownView, WorkspaceLeaf } from 'obsidian';
 import { GoogleAuth, TokenData, GoogleAuthCredentials } from './src/googleAuth';
 import { TaskParser, ChronosTask } from './src/taskParser';
 import { DateTimeModal } from './src/dateTimeModal';
-import { GoogleCalendarApi, GoogleCalendar } from './src/googleCalendar';
+import { GoogleCalendarApi, GoogleCalendar, GoogleEvent } from './src/googleCalendar';
 import { SyncManager, ChronosSyncData, PendingOperation } from './src/syncManager';
+import { AgendaView, AGENDA_VIEW_TYPE, AgendaViewDeps } from './src/agendaView';
 
 interface ChronosSettings {
 	googleClientId: string;
@@ -14,6 +15,7 @@ interface ChronosSettings {
 	defaultEventDurationMinutes: number;
 	timeZone: string;
 	completedTaskBehavior: 'delete' | 'markComplete';
+	agendaRefreshIntervalMinutes: number;
 }
 
 interface ChronosData {
@@ -30,7 +32,8 @@ const DEFAULT_SETTINGS: ChronosSettings = {
 	defaultReminderMinutes: [30, 10],
 	defaultEventDurationMinutes: 30,
 	timeZone: 'local',
-	completedTaskBehavior: 'markComplete'
+	completedTaskBehavior: 'markComplete',
+	agendaRefreshIntervalMinutes: 10
 };
 
 export default class ChronosPlugin extends Plugin {
@@ -49,6 +52,23 @@ export default class ChronosPlugin extends Plugin {
 		this.taskParser = new TaskParser(this.app);
 		this.calendarApi = new GoogleCalendarApi(() => this.getAccessToken());
 		// SyncManager is initialized in loadSettings()
+
+		// Register the agenda sidebar view
+		this.registerView(AGENDA_VIEW_TYPE, (leaf) => {
+			const deps: AgendaViewDeps = {
+				isAuthenticated: () => this.isAuthenticated(),
+				hasCalendarSelected: () => !!this.settings.googleCalendarId,
+				fetchEventsForDate: (date: Date) => this.fetchEventsForDate(date),
+				fetchEventColors: () => this.calendarApi.getEventColors(),
+				getCalendarColor: () => this.getSelectedCalendarColor(),
+				getSyncedTasks: () => this.syncManager.getSyncData().syncedTasks,
+				getTimeZone: () => this.getTimeZone(),
+				openFile: (filePath, lineNumber) => this.openFileAtLine(filePath, lineNumber),
+			};
+			const view = new AgendaView(leaf, deps);
+			view.setRefreshInterval(this.settings.agendaRefreshIntervalMinutes * 60 * 1000);
+			return view;
+		});
 
 		// Add settings tab
 		this.addSettingTab(new ChronosSettingTab(this.app, this));
@@ -94,6 +114,15 @@ export default class ChronosPlugin extends Plugin {
 			name: 'Sync tasks to Google Calendar now',
 			callback: async () => {
 				await this.syncTasks();
+			}
+		});
+
+		// Add command to open/toggle agenda sidebar
+		this.addCommand({
+			id: 'toggle-agenda',
+			name: "Toggle today's agenda sidebar",
+			callback: async () => {
+				await this.toggleAgendaView();
 			}
 		});
 
@@ -417,6 +446,105 @@ export default class ChronosPlugin extends Plugin {
 	}
 
 	/**
+	 * Get the background color of the selected calendar
+	 */
+	async getSelectedCalendarColor(): Promise<string | null> {
+		if (!this.settings.googleCalendarId) {
+			return null;
+		}
+
+		try {
+			const calendars = await this.calendarApi.listCalendars();
+			const selected = calendars.find(c => c.id === this.settings.googleCalendarId);
+			return selected?.backgroundColor || null;
+		} catch (error) {
+			console.error('Chronos: Failed to get calendar color:', error);
+			return null;
+		}
+	}
+
+	/**
+	 * Fetch events for a specific date from Google Calendar
+	 */
+	async fetchEventsForDate(date: Date): Promise<GoogleEvent[]> {
+		const calendarId = this.settings.googleCalendarId;
+		if (!calendarId) {
+			throw new Error('No calendar selected');
+		}
+
+		const timeZone = this.getTimeZone();
+
+		// Get start and end of the specified day
+		const startOfDay = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0);
+		const endOfDay = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59);
+
+		return await this.calendarApi.listEvents(calendarId, startOfDay, endOfDay, timeZone);
+	}
+
+	/**
+	 * Open a file at a specific line in the editor
+	 */
+	async openFileAtLine(filePath: string, lineNumber: number): Promise<void> {
+		const file = this.app.vault.getAbstractFileByPath(filePath);
+		if (!file) {
+			new Notice(`File not found: ${filePath}`);
+			return;
+		}
+
+		const leaf = this.app.workspace.getLeaf(false);
+		await leaf.openFile(file as any);
+
+		// Jump to the line
+		const view = this.app.workspace.getActiveViewOfType(MarkdownView);
+		if (view) {
+			const editor = view.editor;
+			editor.setCursor({ line: lineNumber - 1, ch: 0 });
+			editor.scrollIntoView({
+				from: { line: lineNumber - 1, ch: 0 },
+				to: { line: lineNumber - 1, ch: 0 }
+			}, true);
+		}
+	}
+
+	/**
+	 * Toggle the agenda sidebar view
+	 */
+	async toggleAgendaView(): Promise<void> {
+		const leaves = this.app.workspace.getLeavesOfType(AGENDA_VIEW_TYPE);
+
+		if (leaves.length > 0) {
+			// View exists - close it
+			leaves.forEach(leaf => leaf.detach());
+		} else {
+			// Create view in right sidebar
+			const leaf = this.app.workspace.getRightLeaf(false);
+			if (leaf) {
+				await leaf.setViewState({
+					type: AGENDA_VIEW_TYPE,
+					active: true,
+				});
+				this.app.workspace.revealLeaf(leaf);
+			}
+		}
+	}
+
+	/**
+	 * Refresh all open agenda views (e.g., after settings change)
+	 * @param reloadColors Whether to also reload calendar colors (e.g., after calendar change)
+	 */
+	refreshAgendaViews(reloadColors: boolean = false): void {
+		const leaves = this.app.workspace.getLeavesOfType(AGENDA_VIEW_TYPE);
+		for (const leaf of leaves) {
+			const view = leaf.view as AgendaView;
+			view.setRefreshInterval(this.settings.agendaRefreshIntervalMinutes * 60 * 1000);
+			if (reloadColors) {
+				view.reloadColors();
+			}
+			view.refresh();
+		}
+	}
+
+	/**
 	 * Check if an error is likely a network/temporary issue worth retrying
 	 */
 	isRetryableError(error: any): boolean {
@@ -703,6 +831,100 @@ class ChronosSettingTab extends PluginSettingTab {
 						await this.plugin.saveSettings();
 					}));
 
+			// Timezone setting
+			const currentTz = this.plugin.getTimeZone();
+			new Setting(containerEl)
+				.setName('Timezone')
+				.setDesc(`Events will be created and displayed in this timezone. Current: ${currentTz}`)
+				.addDropdown(dropdown => {
+					// System local option
+					dropdown.addOption('local', `System Local (${Intl.DateTimeFormat().resolvedOptions().timeZone})`);
+
+					// Common timezones with abbreviations
+					// Note: Some zones observe DST, showing standard time abbreviation
+					const timezones: Array<{ id: string; label: string }> = [
+						// Americas
+						{ id: 'America/New_York', label: 'America/New_York (EST/EDT)' },
+						{ id: 'America/Chicago', label: 'America/Chicago (CST/CDT)' },
+						{ id: 'America/Denver', label: 'America/Denver (MST/MDT)' },
+						{ id: 'America/Los_Angeles', label: 'America/Los_Angeles (PST/PDT)' },
+						{ id: 'America/Anchorage', label: 'America/Anchorage (AKST/AKDT)' },
+						{ id: 'America/Phoenix', label: 'America/Phoenix (MST)' },
+						{ id: 'America/Toronto', label: 'America/Toronto (EST/EDT)' },
+						{ id: 'America/Vancouver', label: 'America/Vancouver (PST/PDT)' },
+						{ id: 'America/Mexico_City', label: 'America/Mexico_City (CST)' },
+						{ id: 'America/Sao_Paulo', label: 'America/Sao_Paulo (BRT)' },
+						{ id: 'America/Buenos_Aires', label: 'America/Buenos_Aires (ART)' },
+						// Europe
+						{ id: 'Europe/London', label: 'Europe/London (GMT/BST)' },
+						{ id: 'Europe/Paris', label: 'Europe/Paris (CET/CEST)' },
+						{ id: 'Europe/Berlin', label: 'Europe/Berlin (CET/CEST)' },
+						{ id: 'Europe/Amsterdam', label: 'Europe/Amsterdam (CET/CEST)' },
+						{ id: 'Europe/Rome', label: 'Europe/Rome (CET/CEST)' },
+						{ id: 'Europe/Madrid', label: 'Europe/Madrid (CET/CEST)' },
+						{ id: 'Europe/Moscow', label: 'Europe/Moscow (MSK)' },
+						{ id: 'Europe/Istanbul', label: 'Europe/Istanbul (TRT)' },
+						// Asia
+						{ id: 'Asia/Dubai', label: 'Asia/Dubai (GST)' },
+						{ id: 'Asia/Kolkata', label: 'Asia/Kolkata (IST)' },
+						{ id: 'Asia/Bangkok', label: 'Asia/Bangkok (ICT)' },
+						{ id: 'Asia/Singapore', label: 'Asia/Singapore (SGT)' },
+						{ id: 'Asia/Hong_Kong', label: 'Asia/Hong_Kong (HKT)' },
+						{ id: 'Asia/Shanghai', label: 'Asia/Shanghai (CST)' },
+						{ id: 'Asia/Tokyo', label: 'Asia/Tokyo (JST)' },
+						{ id: 'Asia/Seoul', label: 'Asia/Seoul (KST)' },
+						// Pacific / Australia
+						{ id: 'Pacific/Auckland', label: 'Pacific/Auckland (NZST/NZDT)' },
+						{ id: 'Australia/Sydney', label: 'Australia/Sydney (AEST/AEDT)' },
+						{ id: 'Australia/Melbourne', label: 'Australia/Melbourne (AEST/AEDT)' },
+						{ id: 'Australia/Perth', label: 'Australia/Perth (AWST)' },
+						{ id: 'Pacific/Honolulu', label: 'Pacific/Honolulu (HST)' },
+						// UTC
+						{ id: 'UTC', label: 'UTC' },
+					];
+
+					for (const tz of timezones) {
+						dropdown.addOption(tz.id, tz.label);
+					}
+
+					dropdown.setValue(this.plugin.settings.timeZone);
+					dropdown.onChange(async (value) => {
+						this.plugin.settings.timeZone = value;
+						await this.plugin.saveSettings();
+						// Refresh agenda views to reflect new timezone
+						this.plugin.refreshAgendaViews();
+						// Update the description to show new current timezone
+						this.display();
+					});
+				});
+
+			// Agenda Settings Section
+			containerEl.createEl('h3', { text: 'Agenda Sidebar' });
+
+			new Setting(containerEl)
+				.setName('Agenda refresh interval')
+				.setDesc('How often to refresh the agenda sidebar (in minutes)')
+				.addText(text => text
+					.setPlaceholder('10')
+					.setValue(String(this.plugin.settings.agendaRefreshIntervalMinutes))
+					.onChange(async (value) => {
+						const num = parseInt(value);
+						if (!isNaN(num) && num >= 1) {
+							this.plugin.settings.agendaRefreshIntervalMinutes = num;
+							await this.plugin.saveSettings();
+							this.plugin.refreshAgendaViews();
+						}
+					}));
+
+			new Setting(containerEl)
+				.setName('Open agenda sidebar')
+				.setDesc("Show today's events in the right sidebar")
+				.addButton(button => button
+					.setButtonText('Open Agenda')
+					.onClick(async () => {
+						await this.plugin.toggleAgendaView();
+					}));
+
 			// Sync Status Section
 			containerEl.createEl('h3', { text: 'Sync Status' });
 
@@ -754,6 +976,8 @@ class ChronosSettingTab extends PluginSettingTab {
 					await this.plugin.saveSettings();
 					// Start/restart sync interval when calendar is selected
 					this.plugin.restartSyncInterval();
+					// Refresh agenda views with new calendar color
+					this.plugin.refreshAgendaViews(true);
 				});
 			});
 		} catch (error) {
