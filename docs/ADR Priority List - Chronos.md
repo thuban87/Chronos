@@ -2,7 +2,7 @@
 
 **Last Updated:** January 4, 2026
 **Version:** 0.1.0
-**Status:** Active Development - Phase 8 next
+**Status:** Active Development - Phase 8 Complete, Ready for Phase 10
 
 ---
 
@@ -181,17 +181,32 @@ Each user creates their own Google Cloud project and provides their own Client I
 
 ---
 
-## Phase 8: Multi-Calendar Support - PENDING
+## Phase 8: Multi-Calendar & Event Routing - COMPLETE ✓
 
-**Goal:** Route tasks to different calendars by tag.
+**Goal:** Route tasks to different calendars by tag, with user control over what happens when routing changes.
 
 | Order | Feature | Status | Notes |
 |-------|---------|--------|-------|
-| 43 | Tag-to-calendar mapping UI | Pending | Settings UI for mapping tags to calendars |
-| 44 | Multi-calendar sync logic | Pending | Pick target calendar based on task tags |
-| 45 | Default calendar fallback | Pending | Use default when no tag matches |
+| 43 | Tag-to-calendar mapping UI | ✓ Complete | Settings UI for adding/removing tag→calendar mappings |
+| 44 | Multi-calendar sync logic | ✓ Complete | Each task routes to calendar based on its tags |
+| 45 | Default calendar fallback | ✓ Complete | Tasks with no/unmapped tags use default calendar |
+| 46 | Case-insensitive tag matching | ✓ Complete | #Work matches #work mappings |
+| 47 | Event Routing Behavior modes | ✓ Complete | Preserve (move), Keep Both (duplicate), Fresh Start (delete+create) |
+| 48 | Calendar change warning modal | ✓ Complete | Shows event count, mode description, processing time |
+| 49 | Reroute failure modal | ✓ Complete | Prompts when source calendar inaccessible |
+| 50 | Task ID reconciliation fix | ✓ Complete | Title-based ID + two-pass line/title reconciliation |
 
-**Phase 8 Deliverable:** Tasks tagged #work go to Work calendar, #personal to Personal, etc.
+**Additional features:**
+- Multiple mapped tags warning (uses default calendar with notice)
+- Tags stripped from event titles
+- Google Calendar moveEvent() API for Preserve mode
+- Processing time warning in modal
+- Reload warning for mode changes
+- Updates preserve user-edited event data (description, location, attendees)
+- Duplicate task detection with warning
+- Time included in Task ID (allows "Focus block" at different times)
+
+**Phase 8 Deliverable:** Tasks tagged #work go to Work calendar, with user control over what happens when tags/calendars change. ✓
 
 ---
 
@@ -201,14 +216,37 @@ Each user creates their own Google Cloud project and provides their own Client I
 
 | Order | Feature | Status | Notes |
 |-------|---------|--------|-------|
-| 46 | Sync log/history | ✓ Complete | Batched by sync run with collapsible cards, summary counts |
-| 47 | Per-task reminder override | ✓ Complete | `🔔 30,10` syntax + modal UI with toggle and input fields |
+| 51 | Sync log/history | ✓ Complete | Batched by sync run with collapsible cards, summary counts |
+| 52 | Per-task reminder override | ✓ Complete | `🔔 30,10` syntax + modal UI with toggle and input fields |
 
 **Additional polish (Session 7):**
 - Sync history groups operations by batch with collapsible cards
 - Custom reminders UI in date/time modal (toggle + 2 input fields)
 
 **Phase 9 Deliverable:** Users can debug sync issues and customize reminders per-task. ✓
+
+---
+
+## Phase 10: Batch API Calls - PLANNED
+
+**Goal:** Dramatically improve sync performance for users with many events.
+
+| Order | Feature | Status | Notes |
+|-------|---------|--------|-------|
+| 53 | Batch request builder | Pending | Build multipart MIME body for batch requests |
+| 54 | Batch response parser | Pending | Parse multipart MIME response |
+| 55 | Refactor sync to collect-then-batch | Pending | Change from sequential to batch operations |
+| 56 | Partial failure handling | Pending | Handle mixed success/failure in batch |
+| 57 | Basic debugging support | Pending | Enough logging to troubleshoot without being verbose |
+
+**Why This Matters:**
+- Current: 100 events = 100 sequential requests = 30-50 seconds
+- With batch: 100 events = 1 request = 2-5 seconds
+- Google Calendar API supports up to 100 operations per batch
+
+**Complexity:** Medium-High (2-3 hours estimated)
+
+**Phase 10 Deliverable:** Large calendar migrations complete in seconds instead of minutes.
 
 ---
 
@@ -221,7 +259,6 @@ Features that are valuable but complex or low priority. May implement based on u
 | Two-way sync (Calendar → Obsidian) | High | High | Major feature, needs conflict resolution, refactoring |
 | EditorSuggest `@cal` trigger | Medium | Medium | Type-to-insert; hotkey modal works well enough |
 | Recurring event support | Medium | High | Parse `🔁` from Tasks plugin |
-| Batch operations | Low | Medium | Bulk sync/unsync commands |
 | Calendar event colors | Low | Low | Color by tag or priority |
 
 ---
@@ -234,7 +271,21 @@ Features that are valuable but complex or low priority. May implement based on u
 | ~~No duplicate prevention~~ | ~~High~~ | ✓ Fixed - Task ID tracking |
 | ~~scanVault reads every file~~ | ~~High~~ | ✓ Fixed - Uses metadataCache to skip files without tasks |
 | ~~Embedded OAuth credentials~~ | ~~High~~ | ✓ Fixed - User-provided credentials |
+| ~~Task ID uses line number (wrong)~~ | ~~High~~ | ✓ Fixed - Title-based ID + two-pass reconciliation |
 | Accidental completion edge case | Low | Unchecking creates duplicate (user can delete manually) |
+
+---
+
+## Known Limitations
+
+Document these for users:
+
+| Limitation | Explanation |
+|------------|-------------|
+| Rename + Move = Recreate | Renaming a task AND moving it to a different line simultaneously will delete the old event and create a new one. This is rare and essentially a "new task" anyway. |
+| Mode change requires reload | Changing the Event Routing Behavior mode requires reloading Obsidian to take effect. |
+| True duplicates not supported | Two tasks with identical title, date, time, and file cannot both sync. First occurrence wins, second is skipped with a warning. |
+| Legacy sync data | Tasks synced before Session 10 may lack lineNumber/time fields, causing a one-time delete+create on first edit. Subsequent edits work correctly. |
 
 ---
 
@@ -253,6 +304,7 @@ Features that are valuable but complex or low priority. May implement based on u
 
 - **Tasks Plugin Docs:** https://publish.obsidian.md/tasks/
 - **Google Calendar API:** https://developers.google.com/calendar/api/v3/reference
+- **Google Calendar Batch API:** https://developers.google.com/calendar/api/guides/batch
 - **Google OAuth 2.0:** https://developers.google.com/identity/protocols/oauth2
 - **Obsidian Plugin API:** https://docs.obsidian.md/Plugins/Getting+started/Build+a+plugin
 - **Sample plugin:** https://github.com/obsidianmd/obsidian-sample-plugin

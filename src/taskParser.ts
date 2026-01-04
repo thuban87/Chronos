@@ -66,6 +66,7 @@ const STRIP_PATTERNS = [
     /🛫\s*\d{4}-\d{2}-\d{2}/g,       // Start date
     /⏳\s*\d{4}-\d{2}-\d{2}/g,       // Scheduled date
     /🔔\s*[\d,\s]+/g,                // Custom reminder times
+    /#[\w-]+/g,                       // Tags (e.g., #work, #personal)
 ];
 
 export class TaskParser {

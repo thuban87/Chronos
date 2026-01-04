@@ -216,6 +216,7 @@ export class GoogleCalendarApi {
 
     /**
      * Update an existing calendar event
+     * Preserves user-edited fields (description, location, attendees) while updating Chronos-managed fields
      */
     async updateEvent(calendarId: string, eventId: string, params: CreateEventParams): Promise<GoogleEvent> {
         const token = await this.getAccessToken();
@@ -223,7 +224,23 @@ export class GoogleCalendarApi {
             throw new Error('Not authenticated');
         }
 
-        const event = this.buildEventBody(params);
+        // First, GET the existing event to preserve user edits
+        const getResponse = await requestUrl({
+            url: `${CALENDAR_API_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+            method: 'GET',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+            },
+        });
+
+        if (getResponse.status !== 200) {
+            throw new Error(`Failed to get event for update: ${getResponse.status}`);
+        }
+
+        const existingEvent = getResponse.json;
+
+        // Build the updated event body, merging with existing data
+        const updatedEvent = this.buildEventBodyForUpdate(params, existingEvent);
 
         const response = await requestUrl({
             url: `${CALENDAR_API_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
@@ -232,7 +249,7 @@ export class GoogleCalendarApi {
                 'Authorization': `Bearer ${token}`,
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify(event),
+            body: JSON.stringify(updatedEvent),
         });
 
         if (response.status !== 200) {
@@ -349,6 +366,36 @@ export class GoogleCalendarApi {
     }
 
     /**
+     * Move an event from one calendar to another
+     * This preserves all event details (description, attendees, reminders, etc.)
+     * @returns The moved event (now on the destination calendar)
+     */
+    async moveEvent(sourceCalendarId: string, eventId: string, destinationCalendarId: string): Promise<GoogleEvent> {
+        const token = await this.getAccessToken();
+        if (!token) {
+            throw new Error('Not authenticated');
+        }
+
+        const params = new URLSearchParams({
+            destination: destinationCalendarId,
+        });
+
+        const response = await requestUrl({
+            url: `${CALENDAR_API_BASE}/calendars/${encodeURIComponent(sourceCalendarId)}/events/${encodeURIComponent(eventId)}/move?${params.toString()}`,
+            method: 'POST',
+            headers: {
+                'Authorization': `Bearer ${token}`,
+            },
+        });
+
+        if (response.status !== 200) {
+            throw new Error(`Failed to move event: ${response.status}`);
+        }
+
+        return response.json;
+    }
+
+    /**
      * Build the event body for Google Calendar API
      */
     private buildEventBody(params: CreateEventParams): object {
@@ -404,6 +451,62 @@ export class GoogleCalendarApi {
                 },
             };
         }
+    }
+
+    /**
+     * Build the event body for an UPDATE, preserving user-edited fields
+     * Only updates Chronos-managed fields: summary (title), start, end, reminders
+     * Preserves: description (if user edited), location, attendees, colorId, etc.
+     */
+    private buildEventBodyForUpdate(params: CreateEventParams, existingEvent: any): object {
+        const { task, durationMinutes, reminderMinutes, timeZone } = params;
+
+        // Check if description was user-edited (doesn't contain our signature)
+        const chronosSignature = 'Synced by Chronos for Obsidian';
+        const isDescriptionUserEdited = existingEvent.description &&
+            !existingEvent.description.includes(chronosSignature);
+
+        // If user edited description, keep theirs; otherwise update with new source info
+        const description = isDescriptionUserEdited
+            ? existingEvent.description
+            : `Source: ${task.filePath}\nLine: ${task.lineNumber}\n\n${chronosSignature}`;
+
+        // Start with existing event to preserve all fields (location, attendees, colorId, etc.)
+        const updatedEvent: any = {
+            ...existingEvent,
+            summary: task.title,
+            description: description,
+            reminders: {
+                useDefault: false,
+                overrides: reminderMinutes.map(min => ({
+                    method: 'popup',
+                    minutes: min,
+                })),
+            },
+        };
+
+        // Update start/end times
+        if (task.isAllDay) {
+            const endDate = new Date(task.datetime);
+            endDate.setDate(endDate.getDate() + 1);
+
+            updatedEvent.start = { date: task.date };
+            updatedEvent.end = { date: this.formatDate(endDate) };
+        } else {
+            const startDateTime = task.datetime;
+            const endDateTime = new Date(startDateTime.getTime() + durationMinutes * 60 * 1000);
+
+            updatedEvent.start = {
+                dateTime: this.formatDateTime(startDateTime, timeZone),
+                timeZone: timeZone,
+            };
+            updatedEvent.end = {
+                dateTime: this.formatDateTime(endDateTime, timeZone),
+                timeZone: timeZone,
+            };
+        }
+
+        return updatedEvent;
     }
 
     /**

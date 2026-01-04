@@ -3,7 +3,7 @@ import { GoogleAuth, TokenData, GoogleAuthCredentials } from './src/googleAuth';
 import { TaskParser, ChronosTask } from './src/taskParser';
 import { DateTimeModal } from './src/dateTimeModal';
 import { GoogleCalendarApi, GoogleCalendar, GoogleEvent } from './src/googleCalendar';
-import { SyncManager, ChronosSyncData, PendingOperation, SyncLogEntry } from './src/syncManager';
+import { SyncManager, ChronosSyncData, PendingOperation, SyncLogEntry, MultiCalendarSyncDiff } from './src/syncManager';
 import { AgendaView, AGENDA_VIEW_TYPE, AgendaViewDeps } from './src/agendaView';
 
 interface ChronosSettings {
@@ -16,6 +16,8 @@ interface ChronosSettings {
 	timeZone: string;
 	completedTaskBehavior: 'delete' | 'markComplete';
 	agendaRefreshIntervalMinutes: number;
+	tagCalendarMappings: Record<string, string>;  // tag → calendarId
+	eventRoutingBehavior: 'preserve' | 'keepBoth' | 'freshStart';
 }
 
 interface ChronosData {
@@ -33,7 +35,9 @@ const DEFAULT_SETTINGS: ChronosSettings = {
 	defaultEventDurationMinutes: 30,
 	timeZone: 'local',
 	completedTaskBehavior: 'markComplete',
-	agendaRefreshIntervalMinutes: 10
+	agendaRefreshIntervalMinutes: 10,
+	tagCalendarMappings: {},
+	eventRoutingBehavior: 'preserve'
 };
 
 export default class ChronosPlugin extends Plugin {
@@ -45,6 +49,7 @@ export default class ChronosPlugin extends Plugin {
 	syncManager: SyncManager;
 	private syncIntervalId: number | null = null;
 	private statusBarItem: HTMLElement | null = null;
+	pendingRerouteFailures: { task: ChronosTask; oldCalendarId: string; newCalendarId: string; error: string }[] = [];
 
 	async onload() {
 		await this.loadSettings();
@@ -234,14 +239,21 @@ export default class ChronosPlugin extends Plugin {
 
 			// Scan for ALL tasks including completed ones
 			const allTasks = await this.taskParser.scanVault(true);
-			const calendarId = this.settings.googleCalendarId;
 
 			// Separate uncompleted and completed tasks
 			const uncompletedTasks = allTasks.filter(t => !t.isCompleted);
 			const completedTasks = allTasks.filter(t => t.isCompleted);
 
-			// Compute what needs to be done for uncompleted tasks
-			const diff = this.syncManager.computeSyncDiff(uncompletedTasks, calendarId);
+			// Compute what needs to be done using multi-calendar routing
+			const diff = this.syncManager.computeMultiCalendarSyncDiff(
+				uncompletedTasks,
+				(task) => this.getTargetCalendarForTask(task)
+			);
+
+			// Show warnings for tasks with multiple mapped tags
+			for (const warning of diff.warnings) {
+				new Notice(warning);
+			}
 
 			const timeZone = this.getTimeZone();
 			let created = 0;
@@ -252,19 +264,19 @@ export default class ChronosPlugin extends Plugin {
 			let failed = 0;
 			let unchanged = 0;
 
-			// Create new events
-			for (const task of diff.toCreate) {
+			// Create new events (each task has its own target calendar)
+			for (const { task, targetCalendarId } of diff.toCreate) {
 				try {
 					// Use task-specific reminders if set, otherwise use defaults
 					const reminderMinutes = task.reminderMinutes || this.settings.defaultReminderMinutes;
 					const event = await this.calendarApi.createEvent({
 						task,
-						calendarId,
+						calendarId: targetCalendarId,
 						durationMinutes: this.settings.defaultEventDurationMinutes,
 						reminderMinutes,
 						timeZone,
 					});
-					this.syncManager.recordSync(task, event.id, calendarId);
+					this.syncManager.recordSync(task, event.id, targetCalendarId);
 					this.syncManager.logOperation({
 						type: 'create',
 						taskTitle: task.title,
@@ -296,15 +308,15 @@ export default class ChronosPlugin extends Plugin {
 								rawText: task.rawText,
 								isAllDay: task.isAllDay,
 							},
-							calendarId,
+							calendarId: targetCalendarId,
 						});
 					}
 					failed++;
 				}
 			}
 
-			// Update existing events
-			for (const { task, eventId } of diff.toUpdate) {
+			// Update existing events (each task has its own calendar)
+			for (const { task, eventId, calendarId } of diff.toUpdate) {
 				try {
 					// Use task-specific reminders if set, otherwise use defaults
 					const reminderMinutes = task.reminderMinutes || this.settings.defaultReminderMinutes;
@@ -355,8 +367,117 @@ export default class ChronosPlugin extends Plugin {
 				}
 			}
 
+			// Handle rerouted tasks based on routing behavior setting
+			// These are tasks where the target calendar changed (via tag or default calendar change)
+			let rerouted = 0;
+			const failedReroutes: { task: ChronosTask; oldCalendarId: string; newCalendarId: string; error: string }[] = [];
+
+			for (const { task, eventId, oldCalendarId, newCalendarId } of diff.toReroute) {
+				const routingMode = this.settings.eventRoutingBehavior;
+
+				try {
+					if (routingMode === 'preserve') {
+						// Move the event to the new calendar, preserving all details
+						const movedEvent = await this.calendarApi.moveEvent(oldCalendarId, eventId, newCalendarId);
+						this.syncManager.recordSync(task, movedEvent.id, newCalendarId);
+						this.syncManager.logOperation({
+							type: 'move',
+							taskTitle: task.title,
+							filePath: task.filePath,
+							success: true,
+							batchId,
+						}, batchId);
+						rerouted++;
+					} else if (routingMode === 'keepBoth') {
+						// Create new event on new calendar, leave old one in place
+						const reminderMinutes = task.reminderMinutes || this.settings.defaultReminderMinutes;
+						const newEvent = await this.calendarApi.createEvent({
+							task,
+							calendarId: newCalendarId,
+							durationMinutes: this.settings.defaultEventDurationMinutes,
+							reminderMinutes,
+							timeZone,
+						});
+						this.syncManager.recordSync(task, newEvent.id, newCalendarId);
+						this.syncManager.logOperation({
+							type: 'create',
+							taskTitle: task.title,
+							filePath: task.filePath,
+							success: true,
+							batchId,
+						}, batchId);
+						rerouted++;
+					} else if (routingMode === 'freshStart') {
+						// Delete old event, create new one
+						try {
+							await this.calendarApi.deleteEvent(oldCalendarId, eventId);
+						} catch (deleteError: any) {
+							// If delete fails with 404/403, the calendar may be gone - continue to create
+							const deleteMsg = deleteError?.message || '';
+							if (!deleteMsg.includes('404') && !deleteMsg.includes('403')) {
+								throw deleteError; // Re-throw if it's a different error
+							}
+						}
+						const reminderMinutes = task.reminderMinutes || this.settings.defaultReminderMinutes;
+						const newEvent = await this.calendarApi.createEvent({
+							task,
+							calendarId: newCalendarId,
+							durationMinutes: this.settings.defaultEventDurationMinutes,
+							reminderMinutes,
+							timeZone,
+						});
+						this.syncManager.recordSync(task, newEvent.id, newCalendarId);
+						this.syncManager.logOperation({
+							type: 'create',
+							taskTitle: task.title,
+							filePath: task.filePath,
+							success: true,
+							batchId,
+						}, batchId);
+						rerouted++;
+					}
+				} catch (error: any) {
+					const errorMsg = error?.message || String(error);
+					console.error('Failed to reroute event for task:', task.title, error);
+
+					// Check if this is a 404/403 error (calendar may be deleted)
+					const isCalendarGone = errorMsg.includes('404') || errorMsg.includes('403');
+
+					if (isCalendarGone) {
+						// Track for user prompt - calendar may have been deleted
+						failedReroutes.push({
+							task,
+							oldCalendarId,
+							newCalendarId,
+							error: 'Source calendar not accessible'
+						});
+					} else {
+						// Other error - log and count as failed
+						this.syncManager.logOperation({
+							type: 'move',
+							taskTitle: task.title,
+							filePath: task.filePath,
+							success: false,
+							errorMessage: errorMsg,
+							batchId,
+						}, batchId);
+						failed++;
+					}
+				}
+			}
+
+			// If there were failed reroutes due to inaccessible calendars, prompt user
+			if (failedReroutes.length > 0) {
+				// Store for modal to access
+				this.pendingRerouteFailures = failedReroutes;
+				// Show modal after sync completes
+				setTimeout(() => {
+					new RerouteFailureModal(this.app, this, failedReroutes, batchId, timeZone).open();
+				}, 100);
+			}
+
 			// Verify "unchanged" events still exist in Google Calendar
-			for (const task of diff.unchanged) {
+			for (const { task, calendarId } of diff.unchanged) {
 				const taskId = this.syncManager.generateTaskId(task);
 				const syncInfo = this.syncManager.getSyncInfo(taskId);
 
@@ -397,21 +518,29 @@ export default class ChronosPlugin extends Plugin {
 							failed++;
 						}
 					} else {
+						// Update stored lineNumber in case task moved within file
+						// This ensures future renames can be reconciled correctly
+						if (syncInfo.lineNumber !== task.lineNumber) {
+							this.syncManager.updateSyncLineNumber(taskId, task.lineNumber);
+						}
 						unchanged++;
 					}
 				}
 			}
 
-			// Handle completed tasks - check if they were previously synced
+			// Handle completed tasks - use their stored calendar ID
 			for (const task of completedTasks) {
 				const taskId = this.syncManager.generateTaskId(task);
 				const syncInfo = this.syncManager.getSyncInfo(taskId);
 
 				if (syncInfo) {
+					// Use the calendar where this task was originally synced
+					const taskCalendarId = syncInfo.calendarId;
+
 					// This task was synced before and is now completed
 					try {
 						if (this.settings.completedTaskBehavior === 'delete') {
-							await this.calendarApi.deleteEvent(calendarId, syncInfo.eventId);
+							await this.calendarApi.deleteEvent(taskCalendarId, syncInfo.eventId);
 							this.syncManager.logOperation({
 								type: 'delete',
 								taskTitle: task.title,
@@ -422,7 +551,7 @@ export default class ChronosPlugin extends Plugin {
 							deleted++;
 						} else {
 							// markComplete - update the event title
-							await this.calendarApi.markEventCompleted(calendarId, syncInfo.eventId, new Date());
+							await this.calendarApi.markEventCompleted(taskCalendarId, syncInfo.eventId, new Date());
 							this.syncManager.logOperation({
 								type: 'complete',
 								taskTitle: task.title,
@@ -450,7 +579,7 @@ export default class ChronosPlugin extends Plugin {
 								type: opType,
 								taskId,
 								eventId: syncInfo.eventId,
-								calendarId,
+								calendarId: taskCalendarId,
 							});
 						} else {
 							// Non-retryable error - remove from sync data anyway
@@ -460,12 +589,13 @@ export default class ChronosPlugin extends Plugin {
 				}
 			}
 
-			// Handle orphaned tasks (deleted from vault entirely)
+			// Handle orphaned tasks - use their stored calendar ID
 			for (const taskId of diff.orphaned) {
 				const syncInfo = this.syncManager.getSyncInfo(taskId);
 				if (syncInfo) {
+					const taskCalendarId = syncInfo.calendarId;
 					try {
-						await this.calendarApi.deleteEvent(calendarId, syncInfo.eventId);
+						await this.calendarApi.deleteEvent(taskCalendarId, syncInfo.eventId);
 						this.syncManager.logOperation({
 							type: 'delete',
 							taskTitle: `(orphaned task)`,
@@ -490,7 +620,7 @@ export default class ChronosPlugin extends Plugin {
 								type: 'delete',
 								taskId,
 								eventId: syncInfo.eventId,
-								calendarId,
+								calendarId: taskCalendarId,
 							});
 						} else {
 							// Non-retryable - just remove from sync data
@@ -506,12 +636,13 @@ export default class ChronosPlugin extends Plugin {
 			this.updateStatusBar();
 
 			// Report results
-			const hasChanges = created > 0 || updated > 0 || recreated > 0 || completed > 0 || deleted > 0 || failed > 0 || retryResult.succeeded > 0;
+			const hasChanges = created > 0 || updated > 0 || recreated > 0 || rerouted > 0 || completed > 0 || deleted > 0 || failed > 0 || retryResult.succeeded > 0;
 			if (!silent || hasChanges) {
 				const parts: string[] = [];
 				if (retryResult.succeeded > 0) parts.push(`${retryResult.succeeded} retried`);
 				if (created > 0) parts.push(`${created} created`);
 				if (updated > 0) parts.push(`${updated} updated`);
+				if (rerouted > 0) parts.push(`${rerouted} moved`);
 				if (recreated > 0) parts.push(`${recreated} recreated`);
 				if (completed > 0) parts.push(`${completed} completed`);
 				if (deleted > 0) parts.push(`${deleted} deleted`);
@@ -549,6 +680,58 @@ export default class ChronosPlugin extends Plugin {
 			return Intl.DateTimeFormat().resolvedOptions().timeZone;
 		}
 		return this.settings.timeZone;
+	}
+
+	/**
+	 * Determine the target calendar for a task based on its tags and mappings
+	 * Returns the calendar ID and optionally a warning message
+	 */
+	getTargetCalendarForTask(task: ChronosTask): { calendarId: string; warning?: string } {
+		const mappings = this.settings.tagCalendarMappings;
+		const defaultCalendar = this.settings.googleCalendarId;
+
+		// If no mappings configured, use default
+		if (Object.keys(mappings).length === 0) {
+			return { calendarId: defaultCalendar };
+		}
+
+		// Find which of the task's tags have mappings (case-insensitive)
+		const matchedTags: string[] = [];
+		const matchedCalendars: string[] = [];
+
+		// Build a lowercase lookup map for case-insensitive matching
+		const lowerCaseMappings: Record<string, { originalKey: string; calendarId: string }> = {};
+		for (const [key, calendarId] of Object.entries(mappings)) {
+			lowerCaseMappings[key.toLowerCase()] = { originalKey: key, calendarId };
+		}
+
+		for (const tag of task.tags) {
+			// Normalize tag (ensure # prefix for comparison)
+			const normalizedTag = tag.startsWith('#') ? tag : `#${tag}`;
+			const lowerTag = normalizedTag.toLowerCase();
+
+			// Case-insensitive lookup
+			if (lowerCaseMappings[lowerTag]) {
+				matchedTags.push(normalizedTag);
+				matchedCalendars.push(lowerCaseMappings[lowerTag].calendarId);
+			}
+		}
+
+		// No mapped tags → use default
+		if (matchedTags.length === 0) {
+			return { calendarId: defaultCalendar };
+		}
+
+		// One mapped tag → use that calendar
+		if (matchedTags.length === 1) {
+			return { calendarId: matchedCalendars[0] };
+		}
+
+		// Multiple mapped tags → warning + use default
+		return {
+			calendarId: defaultCalendar,
+			warning: `Task "${task.title}" has multiple mapped tags (${matchedTags.join(', ')}). Using default calendar.`
+		};
 	}
 
 	/**
@@ -843,6 +1026,8 @@ export default class ChronosPlugin extends Plugin {
 
 class ChronosSettingTab extends PluginSettingTab {
 	plugin: ChronosPlugin;
+	calendars: GoogleCalendar[] = [];
+	mappingsContainer: HTMLElement | null = null;
 
 	constructor(app: App, plugin: ChronosPlugin) {
 		super(app, plugin);
@@ -870,13 +1055,55 @@ class ChronosSettingTab extends PluginSettingTab {
 		if (this.plugin.isAuthenticated()) {
 			containerEl.createEl('h3', { text: 'Calendar Selection' });
 
-			// Calendar dropdown
+			// Default calendar dropdown
 			const calendarSetting = new Setting(containerEl)
-				.setName('Target calendar')
-				.setDesc('Select which calendar to sync tasks to');
+				.setName('Default calendar')
+				.setDesc('Tasks without mapped tags will sync to this calendar');
 
 			// Load calendars asynchronously
 			this.loadCalendarDropdown(calendarSetting);
+
+			// Tag-to-Calendar Mappings section
+			containerEl.createEl('h3', { text: 'Tag-to-Calendar Mappings' });
+
+			const mappingsDesc = containerEl.createEl('p', { cls: 'chronos-mappings-desc' });
+			mappingsDesc.setText('Route tasks to specific calendars based on their tags. Tasks with unmapped or no tags go to the default calendar above.');
+
+			// Render mappings container (will be re-rendered after calendars load)
+			this.mappingsContainer = containerEl.createDiv({ cls: 'chronos-mappings-container' });
+			this.renderTagMappings(this.mappingsContainer);
+
+			// Event routing behavior setting
+			containerEl.createEl('h3', { text: 'Event Routing Behavior' });
+
+			const routingDesc = containerEl.createEl('p', { cls: 'chronos-routing-desc' });
+			routingDesc.setText('What happens to existing calendar events when a task\'s target calendar changes (via tag edits or default calendar switch).');
+
+			new Setting(containerEl)
+				.setName('Routing mode')
+				.setDesc(this.getRoutingModeDescription(this.plugin.settings.eventRoutingBehavior))
+				.addDropdown(dropdown => {
+					dropdown.addOption('preserve', '🔄 Preserve - Move events, keep all details');
+					dropdown.addOption('keepBoth', '📋 Keep Both - Leave old, create new (duplicates)');
+					dropdown.addOption('freshStart', '🧹 Fresh Start - Delete old, create new');
+					dropdown.setValue(this.plugin.settings.eventRoutingBehavior);
+					dropdown.onChange(async (value: 'preserve' | 'keepBoth' | 'freshStart') => {
+						this.plugin.settings.eventRoutingBehavior = value;
+						await this.plugin.saveSettings();
+						// Refresh to update description
+						this.display();
+					});
+				});
+
+			// Reload warning
+			const reloadWarning = containerEl.createDiv({ cls: 'chronos-reload-warning' });
+			reloadWarning.createEl('p', {
+				text: '⚠️ Changing the routing mode requires an app reload to take effect.'
+			});
+			reloadWarning.createEl('p', {
+				text: 'To reload: Search for "Reload app without saving" in the command palette (Ctrl/Cmd+P), or close and reopen Obsidian.',
+				cls: 'chronos-reload-instructions'
+			});
 
 			containerEl.createEl('h3', { text: 'Sync Settings' });
 
@@ -1062,11 +1289,13 @@ class ChronosSettingTab extends PluginSettingTab {
 
 		try {
 			const calendars = await this.plugin.calendarApi.listCalendars();
+			// Store calendars for use in tag mappings
+			this.calendars = calendars;
 
 			// Clear and rebuild the setting
 			setting.clear();
-			setting.setName('Target calendar');
-			setting.setDesc('Select which calendar to sync tasks to');
+			setting.setName('Default calendar');
+			setting.setDesc('Tasks without mapped tags will sync to this calendar');
 
 			setting.addDropdown(dropdown => {
 				dropdown.addOption('', '-- Select a calendar --');
@@ -1078,24 +1307,205 @@ class ChronosSettingTab extends PluginSettingTab {
 
 				dropdown.setValue(this.plugin.settings.googleCalendarId);
 				dropdown.onChange(async (value) => {
+					const oldCalendarId = this.plugin.settings.googleCalendarId;
+
+					// If switching from one calendar to another (not initial selection)
+					if (oldCalendarId && oldCalendarId !== value) {
+						// Count affected events
+						const syncedTasks = this.plugin.syncManager.getSyncData().syncedTasks;
+						const affectedCount = Object.values(syncedTasks).filter(
+							info => info.calendarId === oldCalendarId
+						).length;
+
+						if (affectedCount > 0) {
+							// Show warning modal
+							const oldCalName = this.calendars.find(c => c.id === oldCalendarId)?.summary || 'Unknown';
+							const newCalName = this.calendars.find(c => c.id === value)?.summary || 'Unknown';
+
+							new CalendarChangeWarningModal(
+								this.app,
+								this.plugin,
+								oldCalName,
+								newCalName,
+								value,
+								affectedCount,
+								() => {
+									// On confirm - apply the change
+									this.plugin.settings.googleCalendarId = value;
+									this.plugin.saveSettings();
+									this.plugin.restartSyncInterval();
+									this.plugin.refreshAgendaViews(true);
+								},
+								() => {
+									// On cancel - revert the dropdown
+									dropdown.setValue(oldCalendarId);
+								}
+							).open();
+							return;
+						}
+					}
+
+					// No affected events or initial selection - proceed normally
 					this.plugin.settings.googleCalendarId = value;
 					await this.plugin.saveSettings();
-					// Start/restart sync interval when calendar is selected
 					this.plugin.restartSyncInterval();
-					// Refresh agenda views with new calendar color
 					this.plugin.refreshAgendaViews(true);
 				});
 			});
+
+			// Re-render tag mappings now that calendars are loaded
+			if (this.mappingsContainer) {
+				this.renderTagMappings(this.mappingsContainer);
+			}
 		} catch (error) {
 			console.error('Failed to load calendars:', error);
+			this.calendars = [];
 
 			setting.clear();
-			setting.setName('Target calendar');
+			setting.setName('Default calendar');
 			setting.setDesc('Failed to load calendars. Check your connection.');
 
 			setting.addButton(button => button
 				.setButtonText('Retry')
 				.onClick(() => this.display()));
+		}
+	}
+
+	/**
+	 * Render the tag-to-calendar mappings UI
+	 */
+	private renderTagMappings(container: HTMLElement): void {
+		container.empty();
+
+		const mappings = this.plugin.settings.tagCalendarMappings;
+		const mappingEntries = Object.entries(mappings);
+
+		if (mappingEntries.length === 0) {
+			container.createEl('p', {
+				text: 'No tag mappings configured. Add a mapping below.',
+				cls: 'chronos-no-mappings'
+			});
+		} else {
+			// Render each mapping
+			const mappingsList = container.createDiv({ cls: 'chronos-mappings-list' });
+
+			for (const [tag, calendarId] of mappingEntries) {
+				const mappingRow = mappingsList.createDiv({ cls: 'chronos-mapping-row' });
+
+				// Tag display
+				mappingRow.createSpan({
+					text: tag,
+					cls: 'chronos-mapping-tag'
+				});
+
+				// Arrow
+				mappingRow.createSpan({
+					text: '→',
+					cls: 'chronos-mapping-arrow'
+				});
+
+				// Calendar name
+				const calendar = this.calendars.find(c => c.id === calendarId);
+				const calendarName = calendar?.summary || 'Unknown calendar';
+				mappingRow.createSpan({
+					text: calendarName,
+					cls: 'chronos-mapping-calendar'
+				});
+
+				// Delete button
+				const deleteBtn = mappingRow.createEl('button', {
+					text: '×',
+					cls: 'chronos-mapping-delete'
+				});
+				deleteBtn.addEventListener('click', async () => {
+					delete this.plugin.settings.tagCalendarMappings[tag];
+					await this.plugin.saveSettings();
+					this.renderTagMappings(container);
+				});
+			}
+		}
+
+		// Add new mapping section
+		const addSection = container.createDiv({ cls: 'chronos-add-mapping' });
+
+		const tagInput = addSection.createEl('input', {
+			type: 'text',
+			placeholder: '#work',
+			cls: 'chronos-tag-input'
+		});
+
+		addSection.createSpan({
+			text: '→',
+			cls: 'chronos-mapping-arrow'
+		});
+
+		const calendarSelect = addSection.createEl('select', {
+			cls: 'chronos-calendar-select'
+		});
+
+		// Add empty option
+		const emptyOption = calendarSelect.createEl('option', {
+			text: 'Select calendar...',
+			value: ''
+		});
+
+		// Add calendar options
+		for (const cal of this.calendars) {
+			const option = calendarSelect.createEl('option', {
+				text: cal.primary ? `${cal.summary} (Primary)` : cal.summary,
+				value: cal.id
+			});
+		}
+
+		const addBtn = addSection.createEl('button', {
+			text: 'Add',
+			cls: 'chronos-add-mapping-btn'
+		});
+
+		addBtn.addEventListener('click', async () => {
+			let tag = tagInput.value.trim();
+			const calendarId = calendarSelect.value;
+
+			if (!tag || !calendarId) {
+				new Notice('Please enter a tag and select a calendar');
+				return;
+			}
+
+			// Normalize tag to include # if not present
+			if (!tag.startsWith('#')) {
+				tag = '#' + tag;
+			}
+
+			// Check if tag already exists
+			if (this.plugin.settings.tagCalendarMappings[tag]) {
+				new Notice(`Tag "${tag}" is already mapped. Delete the existing mapping first.`);
+				return;
+			}
+
+			// Add the mapping
+			this.plugin.settings.tagCalendarMappings[tag] = calendarId;
+			await this.plugin.saveSettings();
+
+			// Reset inputs
+			tagInput.value = '';
+			calendarSelect.value = '';
+
+			// Re-render
+			this.renderTagMappings(container);
+		});
+	}
+
+	/**
+	 * Get a detailed description for the current routing mode
+	 */
+	private getRoutingModeDescription(mode: 'preserve' | 'keepBoth' | 'freshStart'): string {
+		switch (mode) {
+			case 'preserve':
+				return 'When a task\'s target calendar changes, its existing event will be moved to the new calendar. All details you added in Google Calendar (descriptions, attendees, custom reminders) will be preserved. Recommended for most users.';
+			case 'keepBoth':
+				return 'When a task\'s target calendar changes, the old event will remain on the original calendar and a new event will be created on the new calendar. This creates duplicates but ensures you never lose anything.';
+			case 'freshStart':
+				return 'When a task\'s target calendar changes, the old event will be deleted and a new event will be created on the new calendar. Any edits you made to the old event in Google Calendar (descriptions, attendees, etc.) will be lost.';
 		}
 	}
 
@@ -1530,6 +1940,7 @@ interface SyncLogBatch {
 		deleted: number;
 		completed: number;
 		recreated: number;
+		moved: number;
 		failed: number;
 	};
 }
@@ -1623,6 +2034,7 @@ class SyncLogModal extends Modal {
 				deleted: 0,
 				completed: 0,
 				recreated: 0,
+				moved: 0,
 				failed: 0,
 			};
 
@@ -1639,6 +2051,8 @@ class SyncLogModal extends Modal {
 					summary.completed++;
 				} else if (entry.type === 'recreate') {
 					summary.recreated++;
+				} else if (entry.type === 'move') {
+					summary.moved++;
 				}
 			}
 
@@ -1663,6 +2077,7 @@ class SyncLogModal extends Modal {
 		const parts: string[] = [];
 		if (summary.created > 0) parts.push(`${summary.created} created`);
 		if (summary.updated > 0) parts.push(`${summary.updated} updated`);
+		if (summary.moved > 0) parts.push(`${summary.moved} moved`);
 		if (summary.deleted > 0) parts.push(`${summary.deleted} deleted`);
 		if (summary.completed > 0) parts.push(`${summary.completed} completed`);
 		if (summary.recreated > 0) parts.push(`${summary.recreated} recreated`);
@@ -1737,6 +2152,7 @@ class SyncLogModal extends Modal {
 			delete: '🗑️',
 			complete: '✅',
 			recreate: '🔄',
+			move: '📦',
 			error: '❌',
 		};
 
@@ -1746,6 +2162,7 @@ class SyncLogModal extends Modal {
 			delete: 'Deleted',
 			complete: 'Completed',
 			recreate: 'Recreated',
+			move: 'Moved',
 			error: 'Error',
 		};
 
@@ -1778,6 +2195,286 @@ class SyncLogModal extends Modal {
 				cls: 'chronos-log-error-msg'
 			});
 		}
+	}
+
+	onClose() {
+		const { contentEl } = this;
+		contentEl.empty();
+	}
+}
+
+/**
+ * Modal shown when events couldn't be rerouted due to inaccessible source calendar
+ * Asks user if they want to recreate the events fresh on the new calendar
+ */
+class RerouteFailureModal extends Modal {
+	plugin: ChronosPlugin;
+	failedReroutes: { task: ChronosTask; oldCalendarId: string; newCalendarId: string; error: string }[];
+	batchId: string;
+	timeZone: string;
+
+	constructor(
+		app: App,
+		plugin: ChronosPlugin,
+		failedReroutes: { task: ChronosTask; oldCalendarId: string; newCalendarId: string; error: string }[],
+		batchId: string,
+		timeZone: string
+	) {
+		super(app);
+		this.plugin = plugin;
+		this.failedReroutes = failedReroutes;
+		this.batchId = batchId;
+		this.timeZone = timeZone;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.addClass('chronos-reroute-failure-modal');
+
+		contentEl.createEl('h2', { text: '⚠️ Some Events Couldn\'t Be Moved' });
+
+		const count = this.failedReroutes.length;
+		contentEl.createEl('p', {
+			text: `${count} event${count === 1 ? '' : 's'} couldn't be moved because the source calendar is no longer accessible (it may have been deleted).`
+		});
+
+		contentEl.createEl('p', {
+			text: 'Would you like to create fresh copies of these events on the new calendar?',
+			cls: 'chronos-reroute-question'
+		});
+
+		// List affected tasks
+		const listEl = contentEl.createEl('ul', { cls: 'chronos-reroute-list' });
+		for (const item of this.failedReroutes.slice(0, 10)) {
+			listEl.createEl('li', { text: item.task.title });
+		}
+		if (this.failedReroutes.length > 10) {
+			listEl.createEl('li', {
+				text: `...and ${this.failedReroutes.length - 10} more`,
+				cls: 'chronos-reroute-more'
+			});
+		}
+
+		// Buttons
+		const buttonContainer = contentEl.createDiv({ cls: 'chronos-reroute-buttons' });
+
+		const noBtn = buttonContainer.createEl('button', {
+			text: 'No, Skip These',
+			cls: 'chronos-btn-secondary'
+		});
+		noBtn.addEventListener('click', () => {
+			// Just remove them from sync tracking and close
+			for (const item of this.failedReroutes) {
+				const taskId = this.plugin.syncManager.generateTaskId(item.task);
+				this.plugin.syncManager.removeSync(taskId);
+			}
+			this.plugin.saveSettings();
+			new Notice(`Skipped ${count} event${count === 1 ? '' : 's'}. They will sync as new on next sync.`);
+			this.close();
+		});
+
+		const yesBtn = buttonContainer.createEl('button', {
+			text: 'Yes, Create Fresh',
+			cls: 'chronos-btn-primary'
+		});
+		yesBtn.addEventListener('click', async () => {
+			yesBtn.setAttr('disabled', 'true');
+			yesBtn.setText('Creating...');
+
+			let created = 0;
+			let failed = 0;
+
+			for (const item of this.failedReroutes) {
+				try {
+					const reminderMinutes = item.task.reminderMinutes || this.plugin.settings.defaultReminderMinutes;
+					const event = await this.plugin.calendarApi.createEvent({
+						task: item.task,
+						calendarId: item.newCalendarId,
+						durationMinutes: this.plugin.settings.defaultEventDurationMinutes,
+						reminderMinutes,
+						timeZone: this.timeZone,
+					});
+					this.plugin.syncManager.recordSync(item.task, event.id, item.newCalendarId);
+					this.plugin.syncManager.logOperation({
+						type: 'create',
+						taskTitle: item.task.title,
+						filePath: item.task.filePath,
+						success: true,
+						batchId: this.batchId,
+					}, this.batchId);
+					created++;
+				} catch (error: any) {
+					console.error('Failed to create fresh event:', item.task.title, error);
+					this.plugin.syncManager.logOperation({
+						type: 'create',
+						taskTitle: item.task.title,
+						filePath: item.task.filePath,
+						success: false,
+						errorMessage: error?.message || String(error),
+						batchId: this.batchId,
+					}, this.batchId);
+					// Remove from sync tracking so it can be retried
+					const taskId = this.plugin.syncManager.generateTaskId(item.task);
+					this.plugin.syncManager.removeSync(taskId);
+					failed++;
+				}
+			}
+
+			await this.plugin.saveSettings();
+			this.plugin.updateStatusBar();
+
+			if (failed > 0) {
+				new Notice(`Created ${created} event${created === 1 ? '' : 's'}, ${failed} failed`);
+			} else {
+				new Notice(`Created ${created} fresh event${created === 1 ? '' : 's'}`);
+			}
+
+			this.close();
+		});
+	}
+
+	onClose() {
+		const { contentEl } = this;
+		contentEl.empty();
+		// Clear the pending failures
+		this.plugin.pendingRerouteFailures = [];
+	}
+}
+
+/**
+ * Modal shown when user changes their default calendar
+ * Warns about the routing behavior and affected events
+ */
+class CalendarChangeWarningModal extends Modal {
+	plugin: ChronosPlugin;
+	oldCalName: string;
+	newCalName: string;
+	newCalId: string;
+	affectedCount: number;
+	onConfirm: () => void;
+	onCancel: () => void;
+
+	constructor(
+		app: App,
+		plugin: ChronosPlugin,
+		oldCalName: string,
+		newCalName: string,
+		newCalId: string,
+		affectedCount: number,
+		onConfirm: () => void,
+		onCancel: () => void
+	) {
+		super(app);
+		this.plugin = plugin;
+		this.oldCalName = oldCalName;
+		this.newCalName = newCalName;
+		this.newCalId = newCalId;
+		this.affectedCount = affectedCount;
+		this.onConfirm = onConfirm;
+		this.onCancel = onCancel;
+	}
+
+	onOpen() {
+		const { contentEl } = this;
+		contentEl.empty();
+		contentEl.addClass('chronos-calendar-change-modal');
+
+		contentEl.createEl('h2', { text: '⚠️ Calendar Change - Confirm Your Routing Mode' });
+
+		// Processing time warning (prominent at top)
+		const processingWarning = contentEl.createDiv({ cls: 'chronos-processing-warning' });
+		processingWarning.createEl('p', {
+			text: `⏱️ PLEASE NOTE: Processing ${this.affectedCount} event${this.affectedCount === 1 ? '' : 's'} may take ${Math.ceil(this.affectedCount * 0.3)} - ${Math.ceil(this.affectedCount * 0.5)} seconds.`,
+			cls: 'chronos-processing-time'
+		});
+		processingWarning.createEl('p', {
+			text: 'The app may appear unresponsive during this time. Please wait for the completion notice.',
+			cls: 'chronos-processing-note'
+		});
+
+		// What's changing
+		const changeInfo = contentEl.createDiv({ cls: 'chronos-change-info' });
+		changeInfo.createEl('p', {
+			text: `You're switching from "${this.oldCalName}" to "${this.newCalName}".`
+		});
+		changeInfo.createEl('p', {
+			text: `This will affect ${this.affectedCount} synced event${this.affectedCount === 1 ? '' : 's'}.`,
+			cls: 'chronos-affected-count'
+		});
+
+		// Current mode explanation
+		const mode = this.plugin.settings.eventRoutingBehavior;
+		const modeSection = contentEl.createDiv({ cls: 'chronos-mode-section' });
+
+		const modeNames: Record<string, string> = {
+			preserve: '🔄 Preserve',
+			keepBoth: '📋 Keep Both',
+			freshStart: '🧹 Fresh Start'
+		};
+
+		const modeDescriptions: Record<string, string> = {
+			preserve: `Each task's existing event will be MOVED from "${this.oldCalName}" to "${this.newCalName}". All details you added in Google Calendar (descriptions, attendees, custom reminders) will be preserved.`,
+			keepBoth: `Each task's old event will STAY on "${this.oldCalName}", and a NEW copy will be created on "${this.newCalName}". This creates duplicates but ensures you never lose anything.`,
+			freshStart: `Each task's old event will be DELETED from "${this.oldCalName}", and a NEW event will be created on "${this.newCalName}". Any edits you made to old events in Google Calendar will be lost.`
+		};
+
+		modeSection.createEl('p', {
+			text: `Your current mode: ${modeNames[mode]}`,
+			cls: 'chronos-current-mode'
+		});
+
+		contentEl.createEl('hr');
+
+		modeSection.createEl('p', {
+			text: modeDescriptions[mode],
+			cls: 'chronos-mode-description'
+		});
+
+		// Other modes available
+		const otherModes = contentEl.createDiv({ cls: 'chronos-other-modes' });
+		otherModes.createEl('p', { text: 'Other modes available:', cls: 'chronos-other-modes-header' });
+
+		const otherModesList = otherModes.createEl('ul');
+		for (const [key, name] of Object.entries(modeNames)) {
+			if (key !== mode) {
+				const shortDesc: Record<string, string> = {
+					preserve: 'Moves events, keeps all details',
+					keepBoth: 'Creates duplicates but nothing is lost',
+					freshStart: 'Deletes old events, loses any edits'
+				};
+				otherModesList.createEl('li', { text: `${name} - ${shortDesc[key]}` });
+			}
+		}
+
+		contentEl.createEl('hr');
+
+		// Hint to go back
+		contentEl.createEl('p', {
+			text: 'Hit Cancel to go back to settings to change your routing mode.',
+			cls: 'chronos-cancel-hint'
+		});
+
+		// Buttons
+		const buttonContainer = contentEl.createDiv({ cls: 'chronos-warning-buttons' });
+
+		const cancelBtn = buttonContainer.createEl('button', {
+			text: 'Cancel',
+			cls: 'chronos-btn-secondary'
+		});
+		cancelBtn.addEventListener('click', () => {
+			this.onCancel();
+			this.close();
+		});
+
+		const confirmBtn = buttonContainer.createEl('button', {
+			text: 'OK, Proceed',
+			cls: 'chronos-btn-primary'
+		});
+		confirmBtn.addEventListener('click', () => {
+			this.onConfirm();
+			this.close();
+		});
 	}
 
 	onClose() {
