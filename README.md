@@ -31,14 +31,55 @@ Chronos syncs your Obsidian tasks with Google Calendar, giving you reliable remi
 
 ## Setup
 
-### 1. Connect to Google Calendar
+Chronos requires you to create your own Google Cloud credentials. This keeps your data private and ensures you're never affected by API quotas from other users.
 
-1. Go to Settings → Chronos
-2. Click **Connect** under "Google Calendar Connection"
-3. Sign in with your Google account and grant calendar access
+**Don't worry** - Google Cloud is free for personal use. No credit card required. Setup takes about 5 minutes.
+
+### 1. Create a Google Cloud Project
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/)
+2. Click the project dropdown (top-left) → **New Project**
+3. Name it something like "Chronos" or "Obsidian Calendar"
+4. Click **Create**
+
+### 2. Enable the Google Calendar API
+
+1. In your new project, go to **APIs & Services → Library**
+2. Search for "Google Calendar API"
+3. Click on it, then click **Enable**
+
+### 3. Configure the OAuth Consent Screen
+
+1. Go to **APIs & Services → OAuth consent screen**
+2. Select **External** user type, click **Create**
+3. Fill in the required fields:
+   - App name: "Chronos" (or anything you like)
+   - User support email: Your email
+   - Developer contact: Your email
+4. Click **Save and Continue** through the remaining steps (Scopes, Test Users, Summary)
+5. On the **Test Users** page, click **Add Users** and add your own email address
+
+> **Note**: Your app will be in "Testing" mode, which is fine for personal use. Only the email addresses you add as test users can authenticate.
+
+### 4. Create OAuth Credentials
+
+1. Go to **APIs & Services → Credentials**
+2. Click **Create Credentials → OAuth client ID**
+3. Application type: **Desktop app**
+4. Name: "Chronos" (or anything you like)
+5. Click **Create**
+6. You'll see your **Client ID** and **Client Secret** - copy these!
+
+### 5. Configure Chronos
+
+1. In Obsidian, go to **Settings → Chronos**
+2. Paste your **Client ID** and **Client Secret** in the credentials fields
+3. Click **Connect** and sign in with your Google account
 4. Select your target calendar from the dropdown
 
-### 2. Configure Sync Settings
+You're all set! Your tasks will now sync to Google Calendar.
+
+### 6. Configure Sync Settings (Optional)
 
 | Setting | Description | Default |
 |---------|-------------|---------|
@@ -141,9 +182,13 @@ Google tokens expire periodically. When this happens:
 
 ## Privacy & Security
 
-- **Tokens stored locally**: Your Google credentials are stored only in your vault's plugin data
+- **Your own credentials**: You create and control your own Google Cloud project
+- **Tokens stored locally**: Your Google auth tokens are stored only in your vault's plugin data
 - **No external servers**: Chronos communicates directly with Google Calendar API
+- **No shared quotas**: Your API usage is completely separate from other users
 - **Minimal permissions**: Only requests access to calendar events, not your full Google account
+
+> **Important**: Don't sync your `.obsidian/plugins/chronos/data.json` file to public repositories. It contains your auth tokens. Add it to your `.gitignore` if you version control your vault.
 
 ## Support
 

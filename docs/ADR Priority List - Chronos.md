@@ -2,7 +2,7 @@
 
 **Last Updated:** January 3, 2026
 **Version:** 0.1.0
-**Status:** MVP COMPLETE
+**Status:** Active Development - Phases 7-9
 
 ---
 
@@ -127,71 +127,98 @@
 
 ---
 
-## Pre-Release Checklist (Community Plugins)
+## Pre-Release Checklist (Future Reference)
 
-Before submitting Chronos to the Obsidian Community Plugins directory, complete these steps:
+For whenever release is considered - no timeline, just reference material:
 
-### OAuth Consent Screen Verification
+### OAuth Architecture (Updated Session 4)
 
-**Current Status:** Testing mode (limited to 100 explicitly-added test users)
+**Current Approach:** User-provided credentials
 
-**Why it matters:** Google requires verification for apps that access user data and will be used by the public. Without verification:
-- Only 100 test users can authenticate
-- Users see a "This app isn't verified" warning
-- Token refresh may be unreliable
+Each user creates their own Google Cloud project and provides their own Client ID and Client Secret. This approach:
+- Complies with Google ToS (credentials not publicly shared)
+- Eliminates shared API quota concerns
+- Matches pattern used by other Obsidian Google plugins (obsidian-google-calendar)
+- No OAuth verification needed from plugin developer
 
-**Steps to verify:**
+**User Setup Requirements:**
+- Create Google Cloud project (free)
+- Enable Google Calendar API
+- Configure OAuth consent screen (can stay in "Testing" mode for personal use)
+- Create Desktop app OAuth credentials
+- Add themselves as test user (if in Testing mode)
 
-| Step | Description | Status |
-|------|-------------|--------|
-| 1 | Create a privacy policy page | Pending |
-| 2 | Update OAuth consent screen with privacy policy URL | Pending |
-| 3 | Submit for Google verification review | Pending |
-| 4 | Respond to any verification questions | Pending |
-| 5 | Wait for approval (can take 2-6 weeks) | Pending |
-
-**Requirements for verification:**
-- Privacy policy hosted on a public URL
-- Clear description of what data is accessed and why
-- Demo video showing the OAuth flow (sometimes requested)
-- Domain verification (if using custom domain)
-
-**API Quota Notes:**
-- All users share your project's quota (~1 million queries/day)
-- This is effectively unlimited for normal plugin usage
-- Monitor usage in Google Cloud Console if concerned
+**Trade-off:** More setup friction for users, but better security and no shared liability.
 
 ### Plugin Submission Checklist
 
 | Item | Status |
 |------|--------|
-| OAuth consent screen verified | Pending |
-| README.md with usage instructions | ✓ Complete |
+| User-provided OAuth credentials | ✓ Complete |
+| README.md with setup instructions | ✓ Complete |
 | LICENSE file (MIT) | ✓ Complete |
 | manifest.json version updated | Pending |
 | Console.log statements removed | ✓ Complete |
+| Performance optimization (metadataCache) | ✓ Complete |
 | Tested on Windows | ✓ Complete |
 | Tested on Mac | Pending |
 | Tested on mobile | Pending |
+| Beta testing (BRAT) | Pending |
 | Submit PR to obsidian-releases | Pending |
 
 ---
 
-## Future Possibilities (Post-MVP)
+## Phase 7: Agenda & Timezone - PENDING
+
+**Goal:** Better time display and daily overview.
+
+| Order | Feature | Status | Notes |
+|-------|---------|--------|-------|
+| 41 | Daily agenda sidebar | Pending | Show today's synced events in Obsidian sidebar |
+| 42 | Time zone setting | Pending | Dropdown for explicit zone vs system local |
+
+**Phase 7 Deliverable:** Users can see today's events at a glance and configure timezone explicitly.
+
+---
+
+## Phase 8: Multi-Calendar Support - PENDING
+
+**Goal:** Route tasks to different calendars by tag.
+
+| Order | Feature | Status | Notes |
+|-------|---------|--------|-------|
+| 43 | Tag-to-calendar mapping UI | Pending | Settings UI for mapping tags to calendars |
+| 44 | Multi-calendar sync logic | Pending | Pick target calendar based on task tags |
+| 45 | Default calendar fallback | Pending | Use default when no tag matches |
+
+**Phase 8 Deliverable:** Tasks tagged #work go to Work calendar, #personal to Personal, etc.
+
+---
+
+## Phase 9: Power User Features - PENDING
+
+**Goal:** Transparency and customization for power users.
+
+| Order | Feature | Status | Notes |
+|-------|---------|--------|-------|
+| 46 | Sync log/history | Pending | Modal showing recent sync operations |
+| 47 | Per-task reminder override | Pending | `🔔 15,5` syntax for custom reminder times |
+
+**Phase 9 Deliverable:** Users can debug sync issues and customize reminders per-task.
+
+---
+
+## Maybe Someday (Post-BRAT)
+
+Features that are valuable but complex or low priority. May implement based on user demand.
 
 | Feature | Value | Complexity | Notes |
 |---------|-------|------------|-------|
-| Two-way sync (Calendar → Obsidian) | High | High | Major feature, needs conflict resolution |
-| Daily agenda sidebar | High | Medium | Show today's events in Obsidian |
-| ~~Date-only tasks as all-day events~~ | ~~Medium~~ | ~~Low~~ | ✓ Implemented in Phase 2 |
-| Multi-calendar support | Medium | Medium | Route tasks to calendars by tag |
-| Per-task reminder override | Medium | Low | `🔔 15,5` syntax for custom reminders |
+| Two-way sync (Calendar → Obsidian) | High | High | Major feature, needs conflict resolution, refactoring |
+| EditorSuggest `@cal` trigger | Medium | Medium | Type-to-insert; hotkey modal works well enough |
 | Recurring event support | Medium | High | Parse `🔁` from Tasks plugin |
-| Time zone setting | Low | Low | Explicit zone vs system local |
 | Batch operations | Low | Medium | Bulk sync/unsync commands |
 | Calendar event colors | Low | Low | Color by tag or priority |
-| Sync log/history | Low | Medium | View recent sync operations |
-| EditorSuggest `@cal` trigger | Medium | Medium | Type-to-insert date/time (didn't work initially) |
 
 ---
 
@@ -199,9 +226,10 @@ Before submitting Chronos to the Obsidian Community Plugins directory, complete 
 
 | Item | Priority | Status |
 |------|----------|--------|
-| EditorSuggest `@cal` trigger not working | Low | onTrigger not called on keystrokes - revisit later |
 | ~~Debug console.logs~~ | ~~Low~~ | ✓ Fixed - Removed |
 | ~~No duplicate prevention~~ | ~~High~~ | ✓ Fixed - Task ID tracking |
+| ~~scanVault reads every file~~ | ~~High~~ | ✓ Fixed - Uses metadataCache to skip files without tasks |
+| ~~Embedded OAuth credentials~~ | ~~High~~ | ✓ Fixed - User-provided credentials |
 | Accidental completion edge case | Low | Unchecking creates duplicate (user can delete manually) |
 
 ---

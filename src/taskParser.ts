@@ -137,6 +137,19 @@ export class TaskParser {
     }
 
     /**
+     * Check if a file might contain tasks using metadataCache
+     * This is a quick check to avoid reading files that definitely don't have tasks
+     */
+    private fileHasTasks(file: TFile): boolean {
+        const cache = this.app.metadataCache.getFileCache(file);
+        if (!cache || !cache.listItems) {
+            return false;
+        }
+        // Check if any list item has a task marker (checkbox)
+        return cache.listItems.some(item => item.task !== undefined);
+    }
+
+    /**
      * Scan the entire vault for sync-eligible tasks
      * A task is eligible if:
      * - It has a checkbox (- [ ] or - [x])
@@ -144,12 +157,18 @@ export class TaskParser {
      * - It has a date (📅)
      * - It does NOT have a no-sync marker (🚫)
      * - Time (⏰) is optional - without it, creates all-day event
+     *
+     * Uses metadataCache to skip files without tasks (performance optimization)
      */
     async scanVault(includeCompleted: boolean = false): Promise<ChronosTask[]> {
         const tasks: ChronosTask[] = [];
         const markdownFiles = this.app.vault.getMarkdownFiles();
 
         for (const file of markdownFiles) {
+            // Quick check: skip files that don't have any tasks
+            if (!this.fileHasTasks(file)) {
+                continue;
+            }
             const fileTasks = await this.scanFile(file, includeCompleted);
             tasks.push(...fileTasks);
         }

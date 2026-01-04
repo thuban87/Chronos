@@ -1,9 +1,6 @@
 import { requestUrl, RequestUrlResponse } from 'obsidian';
 import * as http from 'http';
 
-// OAuth 2.0 credentials for Chronos
-const CLIENT_ID = '123909762778-bcrg5jfbrrokgfqrf4kk8lbj0ggjev8m.apps.googleusercontent.com';
-const CLIENT_SECRET = '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';
 const SCOPES = [
     'https://www.googleapis.com/auth/calendar',  // Full calendar access (list calendars + manage events)
     'https://www.googleapis.com/auth/userinfo.email'
@@ -23,9 +20,33 @@ export interface AuthCallbacks {
     onError: (error: string) => void;
 }
 
+export interface GoogleAuthCredentials {
+    clientId: string;
+    clientSecret: string;
+}
+
 export class GoogleAuth {
     private server: http.Server | null = null;
     private currentPort: number = 0;
+    private credentials: GoogleAuthCredentials;
+
+    constructor(credentials: GoogleAuthCredentials) {
+        this.credentials = credentials;
+    }
+
+    /**
+     * Check if credentials are configured
+     */
+    hasCredentials(): boolean {
+        return !!(this.credentials.clientId && this.credentials.clientSecret);
+    }
+
+    /**
+     * Update credentials (e.g., when settings change)
+     */
+    updateCredentials(credentials: GoogleAuthCredentials): void {
+        this.credentials = credentials;
+    }
 
     /**
      * Start the OAuth flow by opening the browser to Google's consent screen
@@ -39,7 +60,7 @@ export class GoogleAuth {
 
         // Build the authorization URL
         const authUrl = new URL(AUTH_ENDPOINT);
-        authUrl.searchParams.set('client_id', CLIENT_ID);
+        authUrl.searchParams.set('client_id', this.credentials.clientId);
         authUrl.searchParams.set('redirect_uri', redirectUri);
         authUrl.searchParams.set('response_type', 'code');
         authUrl.searchParams.set('scope', SCOPES.join(' '));
@@ -122,8 +143,8 @@ export class GoogleAuth {
      */
     private async exchangeCodeForTokens(code: string, redirectUri: string): Promise<TokenData> {
         const params = new URLSearchParams({
-            client_id: CLIENT_ID,
-            client_secret: CLIENT_SECRET,
+            client_id: this.credentials.clientId,
+            client_secret: this.credentials.clientSecret,
             code: code,
             grant_type: 'authorization_code',
             redirect_uri: redirectUri,
@@ -165,8 +186,8 @@ export class GoogleAuth {
      */
     async refreshAccessToken(refreshToken: string): Promise<TokenData> {
         const params = new URLSearchParams({
-            client_id: CLIENT_ID,
-            client_secret: CLIENT_SECRET,
+            client_id: this.credentials.clientId,
+            client_secret: this.credentials.clientSecret,
             refresh_token: refreshToken,
             grant_type: 'refresh_token',
         });

@@ -1,11 +1,13 @@
 import { App, Modal, Plugin, PluginSettingTab, Setting, Notice, MarkdownView } from 'obsidian';
-import { GoogleAuth, TokenData } from './src/googleAuth';
+import { GoogleAuth, TokenData, GoogleAuthCredentials } from './src/googleAuth';
 import { TaskParser, ChronosTask } from './src/taskParser';
 import { DateTimeModal } from './src/dateTimeModal';
 import { GoogleCalendarApi, GoogleCalendar } from './src/googleCalendar';
 import { SyncManager, ChronosSyncData, PendingOperation } from './src/syncManager';
 
 interface ChronosSettings {
+	googleClientId: string;
+	googleClientSecret: string;
 	googleCalendarId: string;
 	syncIntervalMinutes: number;
 	defaultReminderMinutes: number[];
@@ -21,6 +23,8 @@ interface ChronosData {
 }
 
 const DEFAULT_SETTINGS: ChronosSettings = {
+	googleClientId: '',
+	googleClientSecret: '',
 	googleCalendarId: '',
 	syncIntervalMinutes: 10,
 	defaultReminderMinutes: [30, 10],
@@ -41,7 +45,7 @@ export default class ChronosPlugin extends Plugin {
 
 	async onload() {
 		await this.loadSettings();
-		this.googleAuth = new GoogleAuth();
+		this.googleAuth = new GoogleAuth(this.getAuthCredentials());
 		this.taskParser = new TaskParser(this.app);
 		this.calendarApi = new GoogleCalendarApi(() => this.getAccessToken());
 		// SyncManager is initialized in loadSettings()
@@ -556,6 +560,23 @@ export default class ChronosPlugin extends Plugin {
 	}
 
 	/**
+	 * Check if Google OAuth credentials are configured
+	 */
+	hasCredentials(): boolean {
+		return !!(this.settings.googleClientId && this.settings.googleClientSecret);
+	}
+
+	/**
+	 * Get the current OAuth credentials from settings
+	 */
+	getAuthCredentials(): GoogleAuthCredentials {
+		return {
+			clientId: this.settings.googleClientId,
+			clientSecret: this.settings.googleClientSecret,
+		};
+	}
+
+	/**
 	 * Get a valid access token, refreshing if necessary
 	 */
 	async getAccessToken(): Promise<string | null> {
@@ -600,10 +621,16 @@ class ChronosSettingTab extends PluginSettingTab {
 
 		containerEl.createEl('h2', { text: 'Chronos Settings' });
 
-		// Google Account Connection Section
-		containerEl.createEl('h3', { text: 'Google Calendar Connection' });
+		// Google API Credentials Section
+		containerEl.createEl('h3', { text: 'Google API Credentials' });
 
-		this.renderConnectionStatus(containerEl);
+		this.renderCredentialsSection(containerEl);
+
+		// Google Account Connection Section (only show if credentials are configured)
+		if (this.plugin.hasCredentials()) {
+			containerEl.createEl('h3', { text: 'Google Calendar Connection' });
+			this.renderConnectionStatus(containerEl);
+		}
 
 		// Sync Settings Section (only show if connected)
 		if (this.plugin.isAuthenticated()) {
@@ -739,6 +766,60 @@ class ChronosSettingTab extends PluginSettingTab {
 			setting.addButton(button => button
 				.setButtonText('Retry')
 				.onClick(() => this.display()));
+		}
+	}
+
+	private renderCredentialsSection(containerEl: HTMLElement): void {
+		const descEl = containerEl.createEl('p', { cls: 'chronos-credentials-desc' });
+		descEl.innerHTML = `
+			Chronos requires your own Google Cloud credentials. This keeps your data private and ensures
+			you're never affected by API quotas from other users.<br><br>
+			<strong>Setup takes ~5 minutes:</strong> Create a free Google Cloud project, enable the Calendar API,
+			and create OAuth credentials. See the <a href="https://github.com/thuban87/Chronos#setup">README</a> for step-by-step instructions.<br><br>
+			<em>Google Cloud is free for personal use. No credit card required.</em>
+		`;
+
+		const hadCredentialsBefore = this.plugin.hasCredentials();
+
+		new Setting(containerEl)
+			.setName('Google Client ID')
+			.setDesc('From Google Cloud Console → APIs & Services → Credentials')
+			.addText(text => text
+				.setPlaceholder('xxxxx.apps.googleusercontent.com')
+				.setValue(this.plugin.settings.googleClientId)
+				.onChange(async (value) => {
+					this.plugin.settings.googleClientId = value.trim();
+					await this.plugin.saveSettings();
+					this.plugin.googleAuth.updateCredentials(this.plugin.getAuthCredentials());
+					// Refresh settings if credentials state changed
+					if (!hadCredentialsBefore && this.plugin.hasCredentials()) {
+						this.display();
+					}
+				}));
+
+		new Setting(containerEl)
+			.setName('Google Client Secret')
+			.setDesc('From the same OAuth 2.0 Client ID in Google Cloud Console')
+			.addText(text => {
+				text
+					.setPlaceholder('GOCSPX-xxxxxxxxxx')
+					.setValue(this.plugin.settings.googleClientSecret)
+					.onChange(async (value) => {
+						this.plugin.settings.googleClientSecret = value.trim();
+						await this.plugin.saveSettings();
+						this.plugin.googleAuth.updateCredentials(this.plugin.getAuthCredentials());
+						// Refresh settings if credentials state changed
+						if (!hadCredentialsBefore && this.plugin.hasCredentials()) {
+							this.display();
+						}
+					});
+				// Make it a password field for some obscurity
+				text.inputEl.type = 'password';
+			});
+
+		if (!this.plugin.hasCredentials()) {
+			const warningEl = containerEl.createEl('p', { cls: 'chronos-credentials-warning' });
+			warningEl.setText('⚠️ Enter both credentials above, then the Connect button will appear.');
 		}
 	}
 
