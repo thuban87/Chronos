@@ -1,4 +1,5 @@
 import { ChronosTask } from './taskParser';
+import { ChangeSet, ChangeSetOperation, generateOperationId } from './batchApi';
 
 /**
  * A log entry for sync operations
@@ -644,5 +645,138 @@ export class SyncManager {
      */
     clearSyncLog(): void {
         this.syncData.syncLog = [];
+    }
+
+    /**
+     * Build a ChangeSet from sync diff results
+     * This collects all operations before batching
+     */
+    buildChangeSet(
+        diff: MultiCalendarSyncDiff,
+        completedTasks: { task: ChronosTask; syncInfo: SyncedTaskInfo }[],
+        eventRoutingBehavior: 'preserve' | 'keepBoth' | 'freshStart',
+        completedTaskBehavior: 'delete' | 'markComplete',
+        defaultDurationMinutes: number,
+        defaultReminderMinutes: number[],
+        timeZone: string
+    ): ChangeSet {
+        const operations: ChangeSetOperation[] = [];
+        const needsEventData: ChangeSetOperation[] = [];
+
+        // 1. CREATE operations (new tasks)
+        for (const { task, targetCalendarId } of diff.toCreate) {
+            const reminderMinutes = task.reminderMinutes || defaultReminderMinutes;
+            operations.push({
+                id: generateOperationId('create'),
+                type: 'create',
+                calendarId: targetCalendarId,
+                task,
+                durationMinutes: defaultDurationMinutes,
+                reminderMinutes,
+                timeZone,
+            });
+        }
+
+        // 2. UPDATE operations (content changed, same calendar)
+        // These need existing event data to preserve user edits
+        for (const { task, eventId, calendarId } of diff.toUpdate) {
+            const reminderMinutes = task.reminderMinutes || defaultReminderMinutes;
+            const op: ChangeSetOperation = {
+                id: generateOperationId('update'),
+                type: 'update',
+                calendarId,
+                eventId,
+                task,
+                durationMinutes: defaultDurationMinutes,
+                reminderMinutes,
+                timeZone,
+            };
+            operations.push(op);
+            needsEventData.push(op); // Mark for pre-fetch
+        }
+
+        // 3. REROUTE operations (calendar changed)
+        for (const { task, eventId, oldCalendarId, newCalendarId } of diff.toReroute) {
+            const reminderMinutes = task.reminderMinutes || defaultReminderMinutes;
+
+            if (eventRoutingBehavior === 'preserve') {
+                // Move the event
+                operations.push({
+                    id: generateOperationId('move'),
+                    type: 'move',
+                    calendarId: oldCalendarId,
+                    eventId,
+                    destinationCalendarId: newCalendarId,
+                    task,
+                });
+            } else if (eventRoutingBehavior === 'keepBoth') {
+                // Create new event (old one stays dormant)
+                operations.push({
+                    id: generateOperationId('create'),
+                    type: 'create',
+                    calendarId: newCalendarId,
+                    task,
+                    durationMinutes: defaultDurationMinutes,
+                    reminderMinutes,
+                    timeZone,
+                });
+            } else if (eventRoutingBehavior === 'freshStart') {
+                // Delete old, create new
+                operations.push({
+                    id: generateOperationId('delete'),
+                    type: 'delete',
+                    calendarId: oldCalendarId,
+                    eventId,
+                });
+                operations.push({
+                    id: generateOperationId('create'),
+                    type: 'create',
+                    calendarId: newCalendarId,
+                    task,
+                    durationMinutes: defaultDurationMinutes,
+                    reminderMinutes,
+                    timeZone,
+                });
+            }
+        }
+
+        // 4. COMPLETED task operations
+        for (const { task, syncInfo } of completedTasks) {
+            if (completedTaskBehavior === 'delete') {
+                operations.push({
+                    id: generateOperationId('delete'),
+                    type: 'delete',
+                    calendarId: syncInfo.calendarId,
+                    eventId: syncInfo.eventId,
+                    task,
+                });
+            } else {
+                // Mark complete - needs existing event data for the title
+                const op: ChangeSetOperation = {
+                    id: generateOperationId('complete'),
+                    type: 'complete',
+                    calendarId: syncInfo.calendarId,
+                    eventId: syncInfo.eventId,
+                    task,
+                };
+                operations.push(op);
+                needsEventData.push(op);
+            }
+        }
+
+        // 5. ORPHANED task operations (deleted from vault)
+        for (const taskId of diff.orphaned) {
+            const syncInfo = this.getSyncInfo(taskId);
+            if (syncInfo) {
+                operations.push({
+                    id: generateOperationId('delete'),
+                    type: 'delete',
+                    calendarId: syncInfo.calendarId,
+                    eventId: syncInfo.eventId,
+                });
+            }
+        }
+
+        return { operations, needsEventData };
     }
 }

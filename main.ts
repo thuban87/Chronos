@@ -3,8 +3,9 @@ import { GoogleAuth, TokenData, GoogleAuthCredentials } from './src/googleAuth';
 import { TaskParser, ChronosTask } from './src/taskParser';
 import { DateTimeModal } from './src/dateTimeModal';
 import { GoogleCalendarApi, GoogleCalendar, GoogleEvent } from './src/googleCalendar';
-import { SyncManager, ChronosSyncData, PendingOperation, SyncLogEntry, MultiCalendarSyncDiff } from './src/syncManager';
+import { SyncManager, ChronosSyncData, PendingOperation, SyncLogEntry, MultiCalendarSyncDiff, SyncedTaskInfo } from './src/syncManager';
 import { AgendaView, AGENDA_VIEW_TYPE, AgendaViewDeps } from './src/agendaView';
+import { BatchCalendarApi, ChangeSetOperation, BatchResult } from './src/batchApi';
 
 interface ChronosSettings {
 	googleClientId: string;
@@ -46,6 +47,7 @@ export default class ChronosPlugin extends Plugin {
 	googleAuth: GoogleAuth;
 	taskParser: TaskParser;
 	calendarApi: GoogleCalendarApi;
+	batchApi: BatchCalendarApi;
 	syncManager: SyncManager;
 	private syncIntervalId: number | null = null;
 	private statusBarItem: HTMLElement | null = null;
@@ -56,6 +58,7 @@ export default class ChronosPlugin extends Plugin {
 		this.googleAuth = new GoogleAuth(this.getAuthCredentials());
 		this.taskParser = new TaskParser(this.app);
 		this.calendarApi = new GoogleCalendarApi(() => this.getAccessToken());
+		this.batchApi = new BatchCalendarApi(() => this.getAccessToken());
 		// SyncManager is initialized in loadSettings()
 
 		// Register the agenda sidebar view
@@ -214,7 +217,7 @@ export default class ChronosPlugin extends Plugin {
 
 	/**
 	 * Sync all eligible tasks to Google Calendar
-	 * Uses SyncManager for duplicate prevention and change detection
+	 * Uses batch API for dramatically improved performance
 	 * Also handles completed and deleted tasks
 	 */
 	async syncTasks(silent: boolean = false): Promise<void> {
@@ -242,7 +245,7 @@ export default class ChronosPlugin extends Plugin {
 
 			// Separate uncompleted and completed tasks
 			const uncompletedTasks = allTasks.filter(t => !t.isCompleted);
-			const completedTasks = allTasks.filter(t => t.isCompleted);
+			const completedTasksList = allTasks.filter(t => t.isCompleted);
 
 			// Compute what needs to be done using multi-calendar routing
 			const diff = this.syncManager.computeMultiCalendarSyncDiff(
@@ -256,375 +259,279 @@ export default class ChronosPlugin extends Plugin {
 			}
 
 			const timeZone = this.getTimeZone();
+
+			// Collect completed tasks that need action (have sync info)
+			const completedWithSync: { task: ChronosTask; syncInfo: SyncedTaskInfo }[] = [];
+			for (const task of completedTasksList) {
+				const taskId = this.syncManager.generateTaskId(task);
+				const syncInfo = this.syncManager.getSyncInfo(taskId);
+				if (syncInfo) {
+					completedWithSync.push({ task, syncInfo });
+				}
+			}
+
+			// Build the complete ChangeSet (collect phase)
+			const changeSet = this.syncManager.buildChangeSet(
+				diff,
+				completedWithSync,
+				this.settings.eventRoutingBehavior,
+				this.settings.completedTaskBehavior,
+				this.settings.defaultEventDurationMinutes,
+				this.settings.defaultReminderMinutes,
+				timeZone
+			);
+
+			// Counters for results
 			let created = 0;
 			let updated = 0;
+			let rerouted = 0;
 			let recreated = 0;
 			let completed = 0;
 			let deleted = 0;
 			let failed = 0;
 			let unchanged = 0;
 
-			// Create new events (each task has its own target calendar)
-			for (const { task, targetCalendarId } of diff.toCreate) {
-				try {
-					// Use task-specific reminders if set, otherwise use defaults
-					const reminderMinutes = task.reminderMinutes || this.settings.defaultReminderMinutes;
-					const event = await this.calendarApi.createEvent({
-						task,
-						calendarId: targetCalendarId,
-						durationMinutes: this.settings.defaultEventDurationMinutes,
-						reminderMinutes,
-						timeZone,
-					});
-					this.syncManager.recordSync(task, event.id, targetCalendarId);
-					this.syncManager.logOperation({
-						type: 'create',
-						taskTitle: task.title,
-						filePath: task.filePath,
-						success: true,
-						batchId,
-					}, batchId);
-					created++;
-				} catch (error: any) {
-					console.error('Failed to create event for task:', task.title, error);
-					this.syncManager.logOperation({
-						type: 'create',
-						taskTitle: task.title,
-						filePath: task.filePath,
-						success: false,
-						errorMessage: error?.message || String(error),
-						batchId,
-					}, batchId);
-					if (this.isRetryableError(error)) {
-						this.syncManager.queueOperation({
-							type: 'create',
-							taskId: this.syncManager.generateTaskId(task),
-							taskData: {
-								title: task.title,
-								date: task.date,
-								time: task.time,
-								filePath: task.filePath,
-								lineNumber: task.lineNumber,
-								rawText: task.rawText,
-								isAllDay: task.isAllDay,
-							},
-							calendarId: targetCalendarId,
-						});
-					}
-					failed++;
-				}
-			}
-
-			// Update existing events (each task has its own calendar)
-			for (const { task, eventId, calendarId } of diff.toUpdate) {
-				try {
-					// Use task-specific reminders if set, otherwise use defaults
-					const reminderMinutes = task.reminderMinutes || this.settings.defaultReminderMinutes;
-					await this.calendarApi.updateEvent(calendarId, eventId, {
-						task,
-						calendarId,
-						durationMinutes: this.settings.defaultEventDurationMinutes,
-						reminderMinutes,
-						timeZone,
-					});
-					this.syncManager.recordSync(task, eventId, calendarId);
-					this.syncManager.logOperation({
-						type: 'update',
-						taskTitle: task.title,
-						filePath: task.filePath,
-						success: true,
-						batchId,
-					}, batchId);
-					updated++;
-				} catch (error: any) {
-					console.error('Failed to update event for task:', task.title, error);
-					this.syncManager.logOperation({
-						type: 'update',
-						taskTitle: task.title,
-						filePath: task.filePath,
-						success: false,
-						errorMessage: error?.message || String(error),
-						batchId,
-					}, batchId);
-					if (this.isRetryableError(error)) {
-						this.syncManager.queueOperation({
-							type: 'update',
-							taskId: this.syncManager.generateTaskId(task),
-							eventId,
-							taskData: {
-								title: task.title,
-								date: task.date,
-								time: task.time,
-								filePath: task.filePath,
-								lineNumber: task.lineNumber,
-								rawText: task.rawText,
-								isAllDay: task.isAllDay,
-							},
-							calendarId,
-						});
-					}
-					failed++;
-				}
-			}
-
-			// Handle rerouted tasks based on routing behavior setting
-			// These are tasks where the target calendar changed (via tag or default calendar change)
-			let rerouted = 0;
+			// Track failed reroutes for user prompt
 			const failedReroutes: { task: ChronosTask; oldCalendarId: string; newCalendarId: string; error: string }[] = [];
 
-			for (const { task, eventId, oldCalendarId, newCalendarId } of diff.toReroute) {
-				const routingMode = this.settings.eventRoutingBehavior;
+			// If there are operations that need existing event data, batch-fetch them first
+			if (changeSet.needsEventData.length > 0) {
+				const getOps: ChangeSetOperation[] = changeSet.needsEventData.map(op => ({
+					...op,
+					id: `get_${op.id}`,
+					type: 'get' as const,
+				}));
 
-				try {
-					if (routingMode === 'preserve') {
-						// Move the event to the new calendar, preserving all details
-						const movedEvent = await this.calendarApi.moveEvent(oldCalendarId, eventId, newCalendarId);
-						this.syncManager.recordSync(task, movedEvent.id, newCalendarId);
-						this.syncManager.logOperation({
-							type: 'move',
-							taskTitle: task.title,
-							filePath: task.filePath,
-							success: true,
-							batchId,
-						}, batchId);
-						rerouted++;
-					} else if (routingMode === 'keepBoth') {
-						// Create new event on new calendar, leave old one in place
-						const reminderMinutes = task.reminderMinutes || this.settings.defaultReminderMinutes;
-						const newEvent = await this.calendarApi.createEvent({
-							task,
-							calendarId: newCalendarId,
-							durationMinutes: this.settings.defaultEventDurationMinutes,
-							reminderMinutes,
-							timeZone,
-						});
-						this.syncManager.recordSync(task, newEvent.id, newCalendarId);
-						this.syncManager.logOperation({
-							type: 'create',
-							taskTitle: task.title,
-							filePath: task.filePath,
-							success: true,
-							batchId,
-						}, batchId);
-						rerouted++;
-					} else if (routingMode === 'freshStart') {
-						// Delete old event, create new one
-						try {
-							await this.calendarApi.deleteEvent(oldCalendarId, eventId);
-						} catch (deleteError: any) {
-							// If delete fails with 404/403, the calendar may be gone - continue to create
-							const deleteMsg = deleteError?.message || '';
-							if (!deleteMsg.includes('404') && !deleteMsg.includes('403')) {
-								throw deleteError; // Re-throw if it's a different error
+				const getResult = await this.executeBatchWithRetry(getOps);
+
+				// Attach fetched data to the original operations
+				for (const result of getResult.results) {
+					if (result.success && result.body) {
+						const originalId = result.id.replace('get_', '');
+						const op = changeSet.operations.find(o => o.id === originalId);
+						if (op) {
+							op.existingEventData = result.body;
+						}
+					}
+				}
+			}
+
+			// Execute the main batch (if there are operations)
+			if (changeSet.operations.length > 0) {
+				const batchResult = await this.executeBatchWithRetry(changeSet.operations);
+
+				if (batchResult.batchFailed) {
+					// Entire batch failed - all operations should be queued for retry
+					for (const op of changeSet.operations) {
+						this.logOperationFromBatch(op, false, batchResult.batchError || 'Batch request failed', batchId);
+						if (op.task && (op.type === 'create' || op.type === 'update')) {
+							this.syncManager.queueOperation({
+								type: op.type,
+								taskId: this.syncManager.generateTaskId(op.task),
+								eventId: op.eventId,
+								taskData: {
+									title: op.task.title,
+									date: op.task.date,
+									time: op.task.time,
+									filePath: op.task.filePath,
+									lineNumber: op.task.lineNumber,
+									rawText: op.task.rawText,
+									isAllDay: op.task.isAllDay,
+								},
+								calendarId: op.calendarId,
+							});
+						}
+						failed++;
+					}
+				} else {
+					// Process individual results
+					for (const result of batchResult.results) {
+						const op = changeSet.operations.find(o => o.id === result.id);
+						if (!op) continue;
+
+						if (result.success) {
+							// Handle successful operation
+							switch (op.type) {
+								case 'create':
+									if (op.task && result.body?.id) {
+										this.syncManager.recordSync(op.task, result.body.id, op.calendarId);
+										created++;
+									}
+									this.logOperationFromBatch(op, true, undefined, batchId);
+									break;
+
+								case 'update':
+									if (op.task) {
+										this.syncManager.recordSync(op.task, op.eventId!, op.calendarId);
+										updated++;
+									}
+									this.logOperationFromBatch(op, true, undefined, batchId);
+									break;
+
+								case 'delete':
+									// Find orphaned task ID or completed task to remove sync
+									if (op.task) {
+										const taskId = this.syncManager.generateTaskId(op.task);
+										this.syncManager.removeSync(taskId);
+									} else {
+										// Orphaned deletion - find by eventId
+										const orphanId = diff.orphaned.find(id => {
+											const info = this.syncManager.getSyncInfo(id);
+											return info?.eventId === op.eventId;
+										});
+										if (orphanId) {
+											this.syncManager.removeSync(orphanId);
+										}
+									}
+									deleted++;
+									this.logOperationFromBatch(op, true, undefined, batchId);
+									break;
+
+								case 'move':
+									if (op.task && result.body?.id) {
+										this.syncManager.recordSync(op.task, result.body.id, op.destinationCalendarId!);
+										rerouted++;
+									}
+									this.logOperationFromBatch(op, true, undefined, batchId);
+									break;
+
+								case 'complete':
+									if (op.task) {
+										const taskId = this.syncManager.generateTaskId(op.task);
+										this.syncManager.removeSync(taskId);
+										completed++;
+									}
+									this.logOperationFromBatch(op, true, undefined, batchId);
+									break;
+							}
+						} else {
+							// Handle failed operation
+							const errorMsg = result.error || `HTTP ${result.status}`;
+
+							// Check for calendar-gone errors on moves
+							if (op.type === 'move' && (result.status === 404 || result.status === 403)) {
+								if (op.task) {
+									failedReroutes.push({
+										task: op.task,
+										oldCalendarId: op.calendarId,
+										newCalendarId: op.destinationCalendarId!,
+										error: 'Source calendar not accessible'
+									});
+								}
+							} else {
+								this.logOperationFromBatch(op, false, errorMsg, batchId);
+
+								// Queue for retry if retryable
+								if (this.isRetryableStatusCode(result.status)) {
+									if (op.task && (op.type === 'create' || op.type === 'update')) {
+										this.syncManager.queueOperation({
+											type: op.type,
+											taskId: this.syncManager.generateTaskId(op.task),
+											eventId: op.eventId,
+											taskData: {
+												title: op.task.title,
+												date: op.task.date,
+												time: op.task.time,
+												filePath: op.task.filePath,
+												lineNumber: op.task.lineNumber,
+												rawText: op.task.rawText,
+												isAllDay: op.task.isAllDay,
+											},
+											calendarId: op.calendarId,
+										});
+									}
+								}
+								failed++;
 							}
 						}
-						const reminderMinutes = task.reminderMinutes || this.settings.defaultReminderMinutes;
-						const newEvent = await this.calendarApi.createEvent({
-							task,
-							calendarId: newCalendarId,
-							durationMinutes: this.settings.defaultEventDurationMinutes,
-							reminderMinutes,
-							timeZone,
-						});
-						this.syncManager.recordSync(task, newEvent.id, newCalendarId);
-						this.syncManager.logOperation({
-							type: 'create',
-							taskTitle: task.title,
-							filePath: task.filePath,
-							success: true,
-							batchId,
-						}, batchId);
-						rerouted++;
-					}
-				} catch (error: any) {
-					const errorMsg = error?.message || String(error);
-					console.error('Failed to reroute event for task:', task.title, error);
-
-					// Check if this is a 404/403 error (calendar may be deleted)
-					const isCalendarGone = errorMsg.includes('404') || errorMsg.includes('403');
-
-					if (isCalendarGone) {
-						// Track for user prompt - calendar may have been deleted
-						failedReroutes.push({
-							task,
-							oldCalendarId,
-							newCalendarId,
-							error: 'Source calendar not accessible'
-						});
-					} else {
-						// Other error - log and count as failed
-						this.syncManager.logOperation({
-							type: 'move',
-							taskTitle: task.title,
-							filePath: task.filePath,
-							success: false,
-							errorMessage: errorMsg,
-							batchId,
-						}, batchId);
-						failed++;
 					}
 				}
 			}
 
 			// If there were failed reroutes due to inaccessible calendars, prompt user
 			if (failedReroutes.length > 0) {
-				// Store for modal to access
 				this.pendingRerouteFailures = failedReroutes;
-				// Show modal after sync completes
 				setTimeout(() => {
 					new RerouteFailureModal(this.app, this, failedReroutes, batchId, timeZone).open();
 				}, 100);
 			}
 
-			// Verify "unchanged" events still exist in Google Calendar
-			for (const { task, calendarId } of diff.unchanged) {
-				const taskId = this.syncManager.generateTaskId(task);
-				const syncInfo = this.syncManager.getSyncInfo(taskId);
+			// Verify "unchanged" events still exist - batch check
+			if (diff.unchanged.length > 0) {
+				const existenceCheckOps: ChangeSetOperation[] = diff.unchanged.map(({ task, calendarId }) => {
+					const taskId = this.syncManager.generateTaskId(task);
+					const syncInfo = this.syncManager.getSyncInfo(taskId);
+					return {
+						id: `check_${taskId}`,
+						type: 'get' as const,
+						calendarId,
+						eventId: syncInfo?.eventId,
+						task,
+					};
+				}).filter(op => op.eventId); // Only check if we have an eventId
 
-				if (syncInfo) {
-					const exists = await this.calendarApi.eventExists(calendarId, syncInfo.eventId);
+				if (existenceCheckOps.length > 0) {
+					const checkResult = await this.executeBatchWithRetry(existenceCheckOps);
+					const toRecreate: ChangeSetOperation[] = [];
 
-					if (!exists) {
-						// Event was deleted externally - recreate it
-						try {
-							// Use task-specific reminders if set, otherwise use defaults
-							const reminderMinutes = task.reminderMinutes || this.settings.defaultReminderMinutes;
-							const event = await this.calendarApi.createEvent({
-								task,
-								calendarId,
+					for (const result of checkResult.results) {
+						const op = existenceCheckOps.find(o => o.id === result.id);
+						if (!op || !op.task) continue;
+
+						const taskId = this.syncManager.generateTaskId(op.task);
+
+						// Event doesn't exist or is cancelled
+						if (!result.success || result.body?.status === 'cancelled') {
+							// Queue for recreation
+							const reminderMinutes = op.task.reminderMinutes || this.settings.defaultReminderMinutes;
+							toRecreate.push({
+								id: `recreate_${taskId}`,
+								type: 'create',
+								calendarId: op.calendarId,
+								task: op.task,
 								durationMinutes: this.settings.defaultEventDurationMinutes,
 								reminderMinutes,
 								timeZone,
 							});
-							this.syncManager.recordSync(task, event.id, calendarId);
-							this.syncManager.logOperation({
-								type: 'recreate',
-								taskTitle: task.title,
-								filePath: task.filePath,
-								success: true,
-								batchId,
-							}, batchId);
-							recreated++;
-						} catch (error: any) {
-							console.error('Failed to recreate event for task:', task.title, error);
-							this.syncManager.logOperation({
-								type: 'recreate',
-								taskTitle: task.title,
-								filePath: task.filePath,
-								success: false,
-								errorMessage: error?.message || String(error),
-								batchId,
-							}, batchId);
-							failed++;
-						}
-					} else {
-						// Update stored lineNumber in case task moved within file
-						// This ensures future renames can be reconciled correctly
-						if (syncInfo.lineNumber !== task.lineNumber) {
-							this.syncManager.updateSyncLineNumber(taskId, task.lineNumber);
-						}
-						unchanged++;
-					}
-				}
-			}
-
-			// Handle completed tasks - use their stored calendar ID
-			for (const task of completedTasks) {
-				const taskId = this.syncManager.generateTaskId(task);
-				const syncInfo = this.syncManager.getSyncInfo(taskId);
-
-				if (syncInfo) {
-					// Use the calendar where this task was originally synced
-					const taskCalendarId = syncInfo.calendarId;
-
-					// This task was synced before and is now completed
-					try {
-						if (this.settings.completedTaskBehavior === 'delete') {
-							await this.calendarApi.deleteEvent(taskCalendarId, syncInfo.eventId);
-							this.syncManager.logOperation({
-								type: 'delete',
-								taskTitle: task.title,
-								filePath: task.filePath,
-								success: true,
-								batchId,
-							}, batchId);
-							deleted++;
 						} else {
-							// markComplete - update the event title
-							await this.calendarApi.markEventCompleted(taskCalendarId, syncInfo.eventId, new Date());
-							this.syncManager.logOperation({
-								type: 'complete',
-								taskTitle: task.title,
-								filePath: task.filePath,
-								success: true,
-								batchId,
-							}, batchId);
-							completed++;
-						}
-						// Remove from sync data either way
-						this.syncManager.removeSync(taskId);
-					} catch (error: any) {
-						console.error('Failed to handle completed task:', task.title, error);
-						const opType = this.settings.completedTaskBehavior === 'delete' ? 'delete' : 'complete';
-						this.syncManager.logOperation({
-							type: opType,
-							taskTitle: task.title,
-							filePath: task.filePath,
-							success: false,
-							errorMessage: error?.message || String(error),
-							batchId,
-						}, batchId);
-						if (this.isRetryableError(error)) {
-							this.syncManager.queueOperation({
-								type: opType,
-								taskId,
-								eventId: syncInfo.eventId,
-								calendarId: taskCalendarId,
-							});
-						} else {
-							// Non-retryable error - remove from sync data anyway
-							this.syncManager.removeSync(taskId);
+							// Event exists - update line number if needed
+							const syncInfo = this.syncManager.getSyncInfo(taskId);
+							if (syncInfo && syncInfo.lineNumber !== op.task.lineNumber) {
+								this.syncManager.updateSyncLineNumber(taskId, op.task.lineNumber);
+							}
+							unchanged++;
 						}
 					}
-				}
-			}
 
-			// Handle orphaned tasks - use their stored calendar ID
-			for (const taskId of diff.orphaned) {
-				const syncInfo = this.syncManager.getSyncInfo(taskId);
-				if (syncInfo) {
-					const taskCalendarId = syncInfo.calendarId;
-					try {
-						await this.calendarApi.deleteEvent(taskCalendarId, syncInfo.eventId);
-						this.syncManager.logOperation({
-							type: 'delete',
-							taskTitle: `(orphaned task)`,
-							filePath: syncInfo.filePath,
-							success: true,
-							batchId,
-						}, batchId);
-						deleted++;
-						this.syncManager.removeSync(taskId);
-					} catch (error: any) {
-						console.error('Failed to delete orphaned event:', taskId, error);
-						this.syncManager.logOperation({
-							type: 'delete',
-							taskTitle: `(orphaned task)`,
-							filePath: syncInfo.filePath,
-							success: false,
-							errorMessage: error?.message || String(error),
-							batchId,
-						}, batchId);
-						if (this.isRetryableError(error)) {
-							this.syncManager.queueOperation({
-								type: 'delete',
-								taskId,
-								eventId: syncInfo.eventId,
-								calendarId: taskCalendarId,
-							});
-						} else {
-							// Non-retryable - just remove from sync data
-							this.syncManager.removeSync(taskId);
+					// Execute recreations if needed
+					if (toRecreate.length > 0) {
+						const recreateResult = await this.executeBatchWithRetry(toRecreate);
+
+						for (const result of recreateResult.results) {
+							const op = toRecreate.find(o => o.id === result.id);
+							if (!op || !op.task) continue;
+
+							if (result.success && result.body?.id) {
+								this.syncManager.recordSync(op.task, result.body.id, op.calendarId);
+								this.syncManager.logOperation({
+									type: 'recreate',
+									taskTitle: op.task.title,
+									filePath: op.task.filePath,
+									success: true,
+									batchId,
+								}, batchId);
+								recreated++;
+							} else {
+								this.syncManager.logOperation({
+									type: 'recreate',
+									taskTitle: op.task.title,
+									filePath: op.task.filePath,
+									success: false,
+									errorMessage: result.error || 'Recreation failed',
+									batchId,
+								}, batchId);
+								failed++;
+							}
 						}
 					}
 				}
@@ -670,6 +577,54 @@ export default class ChronosPlugin extends Plugin {
 				}
 			}
 		}
+	}
+
+	/**
+	 * Execute a batch with smart retry on 500/503 errors
+	 * Waits 5 seconds and retries once before giving up
+	 */
+	private async executeBatchWithRetry(operations: ChangeSetOperation[]): Promise<BatchResult> {
+		const result = await this.batchApi.executeBatch(operations);
+
+		// If batch failed with server error, wait and retry once
+		if (result.batchFailed && result.batchStatus && (result.batchStatus >= 500 && result.batchStatus < 600)) {
+			// Wait 5 seconds
+			await new Promise(resolve => setTimeout(resolve, 5000));
+
+			// Retry once
+			const retryResult = await this.batchApi.executeBatch(operations);
+			return retryResult;
+		}
+
+		return result;
+	}
+
+	/**
+	 * Log an operation result from batch execution
+	 */
+	private logOperationFromBatch(op: ChangeSetOperation, success: boolean, errorMessage: string | undefined, batchId: string): void {
+		let logType: 'create' | 'update' | 'delete' | 'complete' | 'move' | 'error' = op.type === 'get' ? 'error' : op.type;
+
+		// Map operation types to log types
+		if (op.type === 'move') logType = 'move';
+		if (op.type === 'complete') logType = 'complete';
+
+		this.syncManager.logOperation({
+			type: logType,
+			taskTitle: op.task?.title || '(unknown)',
+			filePath: op.task?.filePath,
+			success,
+			errorMessage,
+			batchId,
+		}, batchId);
+	}
+
+	/**
+	 * Check if an HTTP status code indicates a retryable error
+	 */
+	private isRetryableStatusCode(status: number): boolean {
+		// 5xx server errors and 429 (rate limit) are retryable
+		return status >= 500 || status === 429;
 	}
 
 	/**
