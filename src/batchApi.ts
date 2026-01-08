@@ -98,25 +98,38 @@ export class BatchCalendarApi {
             };
         }
 
-        // Split into chunks of MAX_BATCH_SIZE
-        const chunks = this.chunkArray(operations, MAX_BATCH_SIZE);
+        // Group operations by calendar ID - Google batch API requires same calendar per batch
+        const opsByCalendar = new Map<string, ChangeSetOperation[]>();
+        for (const op of operations) {
+            const calId = op.calendarId;
+            if (!opsByCalendar.has(calId)) {
+                opsByCalendar.set(calId, []);
+            }
+            opsByCalendar.get(calId)!.push(op);
+        }
+
         const allResults: BatchOperationResult[] = [];
         let anyBatchFailed = false;
         let batchStatus: number | undefined;
         let batchError: string | undefined;
 
-        for (const chunk of chunks) {
-            const result = await this.executeSingleBatch(chunk, token);
+        // Execute batches per calendar
+        for (const [calendarId, calOps] of opsByCalendar) {
+            // Split into chunks of MAX_BATCH_SIZE
+            const chunks = this.chunkArray(calOps, MAX_BATCH_SIZE);
 
-            if (result.batchFailed) {
-                anyBatchFailed = true;
-                batchStatus = result.batchStatus;
-                batchError = result.batchError;
-                // On batch failure, stop processing more chunks
-                break;
+            for (const chunk of chunks) {
+                const result = await this.executeSingleBatch(chunk, token);
+
+                if (result.batchFailed) {
+                    anyBatchFailed = true;
+                    batchStatus = result.batchStatus;
+                    batchError = result.batchError;
+                    // Continue to other calendars even if one fails
+                } else {
+                    allResults.push(...result.results);
+                }
             }
-
-            allResults.push(...result.results);
         }
 
         return {
@@ -514,6 +527,37 @@ export class BatchCalendarApi {
 }
 
 /**
+ * Information about a deletion diverted to the pending queue (Safety Net)
+ */
+export interface DivertedDeletion {
+    /** The task ID being deleted */
+    taskId: string;
+    /** Google Calendar event ID */
+    eventId: string;
+    /** Calendar ID */
+    calendarId: string;
+    /** Event title (from sync info) */
+    eventTitle: string;
+    /** Event date (from sync info) */
+    eventDate: string;
+    /** Event time (from sync info) */
+    eventTime?: string | null;
+    /** Source file path */
+    sourceFile: string;
+    /** Why this deletion was queued */
+    reason: 'orphaned' | 'freshStart';
+    /** Human-readable reason detail */
+    reasonDetail: string;
+    /** Reconstructed task line for restore feature */
+    originalTaskLine: string;
+    /** For freshStart: info about the new event being created */
+    linkedCreate?: {
+        newCalendarId: string;
+        task: ChangeSetOperation;
+    };
+}
+
+/**
  * Builds a ChangeSet from sync diff results
  * This is the "collect" phase before batching
  */
@@ -522,6 +566,8 @@ export interface ChangeSet {
     operations: ChangeSetOperation[];
     /** Operations that need existing event data fetched first (for updates/completes) */
     needsEventData: ChangeSetOperation[];
+    /** Deletions diverted to pending queue for user approval (Safety Net) */
+    divertedDeletions: DivertedDeletion[];
 }
 
 /**

@@ -3,9 +3,14 @@ import { GoogleAuth, TokenData, GoogleAuthCredentials } from './src/googleAuth';
 import { TaskParser, ChronosTask } from './src/taskParser';
 import { DateTimeModal } from './src/dateTimeModal';
 import { GoogleCalendarApi, GoogleCalendar, GoogleEvent } from './src/googleCalendar';
-import { SyncManager, ChronosSyncData, PendingOperation, SyncLogEntry, MultiCalendarSyncDiff, SyncedTaskInfo } from './src/syncManager';
+import { SyncManager, ChronosSyncData, PendingOperation, SyncLogEntry, MultiCalendarSyncDiff, SyncedTaskInfo, PendingDeletion, DeletedEventRecord } from './src/syncManager';
 import { AgendaView, AGENDA_VIEW_TYPE, AgendaViewDeps } from './src/agendaView';
-import { BatchCalendarApi, ChangeSetOperation, BatchResult } from './src/batchApi';
+import { BatchCalendarApi, ChangeSetOperation, BatchResult, DivertedDeletion } from './src/batchApi';
+import { DeletionReviewModal } from './src/deletionReviewModal';
+import { TaskRestoreModal } from './src/taskRestoreModal';
+import { FreshStartWarningModal } from './src/freshStartWarningModal';
+import { PowerUserWarningModal } from './src/powerUserWarningModal';
+import { EventRestoreModal } from './src/eventRestoreModal';
 
 interface ChronosSettings {
 	googleClientId: string;
@@ -19,6 +24,7 @@ interface ChronosSettings {
 	agendaRefreshIntervalMinutes: number;
 	tagCalendarMappings: Record<string, string>;  // tag → calendarId
 	eventRoutingBehavior: 'preserve' | 'keepBoth' | 'freshStart';
+	safeMode: boolean;  // Safety Net: require approval for deletions
 }
 
 interface ChronosData {
@@ -38,7 +44,8 @@ const DEFAULT_SETTINGS: ChronosSettings = {
 	completedTaskBehavior: 'markComplete',
 	agendaRefreshIntervalMinutes: 10,
 	tagCalendarMappings: {},
-	eventRoutingBehavior: 'preserve'
+	eventRoutingBehavior: 'preserve',
+	safeMode: true  // Safety Net enabled by default
 };
 
 export default class ChronosPlugin extends Plugin {
@@ -51,7 +58,9 @@ export default class ChronosPlugin extends Plugin {
 	syncManager: SyncManager;
 	private syncIntervalId: number | null = null;
 	private statusBarItem: HTMLElement | null = null;
+	private pendingDeletionsStatusBarItem: HTMLElement | null = null;
 	pendingRerouteFailures: { task: ChronosTask; oldCalendarId: string; newCalendarId: string; error: string }[] = [];
+	private calendarNameCache: Map<string, string> = new Map();
 
 	async onload() {
 		await this.loadSettings();
@@ -149,12 +158,29 @@ export default class ChronosPlugin extends Plugin {
 			}
 		});
 
+		// Add command to review pending deletions (Safety Net)
+		this.addCommand({
+			id: 'review-pending-deletions',
+			name: 'Review pending deletions',
+			callback: () => {
+				this.openDeletionReviewModal();
+			}
+		});
+
 		// Add status bar item
 		this.statusBarItem = this.addStatusBarItem();
 		this.statusBarItem.addClass('chronos-status-bar');
 		this.statusBarItem.onClickEvent(() => {
 			this.syncTasks();
 		});
+
+		// Add pending deletions status bar item (Safety Net)
+		this.pendingDeletionsStatusBarItem = this.addStatusBarItem();
+		this.pendingDeletionsStatusBarItem.addClass('chronos-pending-deletions-status');
+		this.pendingDeletionsStatusBarItem.onClickEvent(() => {
+			this.openDeletionReviewModal();
+		});
+
 		this.updateStatusBar();
 
 		console.log('Chronos plugin loaded');
@@ -169,6 +195,7 @@ export default class ChronosPlugin extends Plugin {
 		if (!this.isAuthenticated()) {
 			this.statusBarItem.setText('📅 Chronos: Not connected');
 			this.statusBarItem.setAttr('aria-label', 'Click to open settings and connect');
+			this.updatePendingDeletionsStatusBar();
 			return;
 		}
 
@@ -178,6 +205,7 @@ export default class ChronosPlugin extends Plugin {
 		if (!lastSync) {
 			this.statusBarItem.setText(`📅 Chronos: ${syncedCount} tasks (never synced)`);
 			this.statusBarItem.setAttr('aria-label', 'Click to sync now');
+			this.updatePendingDeletionsStatusBar();
 			return;
 		}
 
@@ -205,6 +233,387 @@ export default class ChronosPlugin extends Plugin {
 
 		this.statusBarItem.setText(`📅 ${syncedCount} synced${pendingText} • ${timeAgo}`);
 		this.statusBarItem.setAttr('aria-label', `Chronos: Last sync ${timeAgo}, ${nextSyncText}. Click to sync now.`);
+
+		this.updatePendingDeletionsStatusBar();
+	}
+
+	/**
+	 * Update the pending deletions status bar indicator (Safety Net)
+	 * Only visible when there are pending deletions awaiting review
+	 */
+	updatePendingDeletionsStatusBar(): void {
+		if (!this.pendingDeletionsStatusBarItem) return;
+
+		const pendingDeletionCount = this.syncManager.getPendingDeletionCount();
+
+		if (pendingDeletionCount === 0) {
+			// Hide the status bar item when no pending deletions
+			this.pendingDeletionsStatusBarItem.style.display = 'none';
+		} else {
+			// Show the status bar item with warning indicator
+			this.pendingDeletionsStatusBarItem.style.display = '';
+			this.pendingDeletionsStatusBarItem.setText(`⚠️ ${pendingDeletionCount} pending`);
+			this.pendingDeletionsStatusBarItem.setAttr(
+				'aria-label',
+				`${pendingDeletionCount} deletion${pendingDeletionCount === 1 ? '' : 's'} awaiting review. Click to review.`
+			);
+		}
+	}
+
+	/**
+	 * Open the deletion review modal (Safety Net)
+	 */
+	async openDeletionReviewModal(): Promise<void> {
+		// Refresh calendar name cache before opening modal
+		await this.refreshCalendarNameCache();
+
+		const pendingDeletions = this.syncManager.getPendingDeletions();
+
+		new DeletionReviewModal(this.app, pendingDeletions, {
+			onDelete: async (deletion: PendingDeletion) => {
+				try {
+					// Delete the event from Google Calendar
+					await this.calendarApi.deleteEvent(deletion.calendarId, deletion.eventId);
+				} catch (error: any) {
+					// 410 Gone means already deleted - treat as success
+					if (error?.message?.includes('410') || error?.status === 410) {
+						console.log(`Event ${deletion.eventId} already deleted (410 Gone)`);
+					} else {
+						console.error('Failed to delete event:', error);
+						new Notice(`Failed to delete event: ${error.message}`);
+						return;
+					}
+				}
+
+				// Move to recently deleted and remove from pending
+				const calendarName = await this.getCalendarNameById(deletion.calendarId);
+				this.syncManager.confirmDeletion(deletion.id, calendarName);
+
+				// Remove from sync tracking
+				this.syncManager.removeSync(deletion.taskId);
+
+				await this.saveSettings();
+				this.updateStatusBar();
+				new Notice(`Deleted "${deletion.eventTitle}" from calendar`);
+			},
+			onKeep: (deletion: PendingDeletion) => {
+				// Remove from pending queue but don't delete from calendar
+				// Also remove from sync tracking (Option B - forget it)
+				this.syncManager.removePendingDeletion(deletion.id);
+				this.syncManager.removeSync(deletion.taskId);
+				this.saveSettings();
+				this.updateStatusBar();
+				new Notice(`Keeping "${deletion.eventTitle}" on calendar (Chronos will no longer track it)`);
+			},
+			onRestore: (deletion: PendingDeletion) => {
+				new TaskRestoreModal(this.app, deletion, () => {
+					// User clicked "Done - I've pasted it back"
+					// Remove from pending queue (they'll sync to reconnect)
+					this.syncManager.removePendingDeletion(deletion.id);
+					this.saveSettings();
+					this.updateStatusBar();
+					new Notice('Great! Run a sync to reconnect the task to its event.');
+				}).open();
+			},
+			onDeleteAll: async () => {
+				const deletions = this.syncManager.getPendingDeletions();
+
+				if (deletions.length === 0) {
+					new Notice('No pending deletions to process');
+					return;
+				}
+
+				let deleted = 0;
+				let created = 0;
+				let failed = 0;
+
+				const timeZone = this.settings.timeZone === 'local'
+					? Intl.DateTimeFormat().resolvedOptions().timeZone
+					: this.settings.timeZone;
+
+				// Build delete operations for batch API
+				const deleteOps: ChangeSetOperation[] = deletions.map((deletion, index) => ({
+					id: `delete_batch_${Date.now()}_${index}`,
+					type: 'delete' as const,
+					calendarId: deletion.calendarId,
+					eventId: deletion.eventId,
+				}));
+
+				// Execute deletions in batch
+				const deleteResults = await this.batchApi.executeBatch(deleteOps);
+
+				// Map deletion ID to result for easy lookup
+				const resultMap = new Map<string, { success: boolean; status: number }>();
+				deleteResults.results.forEach((result, index) => {
+					const deletion = deletions[index];
+					// 410 Gone means already deleted - treat as success
+					const isSuccess = result.success || result.status === 410;
+					resultMap.set(deletion.id, { success: isSuccess, status: result.status });
+					if (isSuccess) {
+						deleted++;
+					} else {
+						failed++;
+					}
+				});
+
+				// Build create operations for Fresh Start items where delete succeeded
+				const createOps: ChangeSetOperation[] = [];
+				const createOpToDeletion = new Map<string, PendingDeletion>();
+
+				deletions.forEach((deletion, index) => {
+					const result = resultMap.get(deletion.id);
+					// Create replacement event if delete succeeded (including 410) and this is a freshStart item
+					if (result?.success && deletion.reason === 'freshStart' && deletion.linkedCreate) {
+						const task = deletion.linkedCreate.task;
+						const opId = `create_batch_${Date.now()}_${index}`;
+						createOps.push({
+							id: opId,
+							type: 'create',
+							calendarId: deletion.linkedCreate.newCalendarId,
+							task,
+							durationMinutes: this.settings.defaultEventDurationMinutes,
+							reminderMinutes: task.reminderMinutes || this.settings.defaultReminderMinutes,
+							timeZone,
+						});
+						createOpToDeletion.set(opId, deletion);
+					}
+				});
+
+				// Execute creates in batch if any
+				if (createOps.length > 0) {
+					const createResults = await this.batchApi.executeBatch(createOps);
+
+					createResults.results.forEach((result) => {
+						const deletion = createOpToDeletion.get(result.id);
+						if (result.success && result.body?.id && deletion?.linkedCreate) {
+							// Record the new sync
+							this.syncManager.recordSync(
+								deletion.linkedCreate.task,
+								result.body.id,
+								deletion.linkedCreate.newCalendarId
+							);
+							created++;
+						}
+					});
+				}
+
+				// Clean up pending deletions and sync records for successful deletions
+				for (const deletion of deletions) {
+					const result = resultMap.get(deletion.id);
+					if (result?.success) {
+						const calendarName = this.getCachedCalendarName(deletion.calendarId);
+						this.syncManager.confirmDeletion(deletion.id, calendarName);
+						// Only remove sync for non-freshStart items (orphans)
+						// For freshStart items, recordSync already overwrote the entry with the new event
+						if (deletion.reason !== 'freshStart') {
+							this.syncManager.removeSync(deletion.taskId);
+						}
+					}
+				}
+
+				await this.saveSettings();
+				this.updateStatusBar();
+
+				const msg = `Deleted ${deleted} event${deleted === 1 ? '' : 's'}` +
+					(created > 0 ? `, created ${created} new` : '') +
+					(failed > 0 ? `, ${failed} failed` : '');
+				new Notice(msg);
+			},
+			onKeepAll: async () => {
+				const deletions = this.syncManager.getPendingDeletions();
+				let kept = 0;
+				let created = 0;
+
+				const timeZone = this.settings.timeZone === 'local'
+					? Intl.DateTimeFormat().resolvedOptions().timeZone
+					: this.settings.timeZone;
+
+				// For Fresh Start items, keep old AND create new
+				// For orphan items, just remove from pending (keep old event)
+				const freshStartItems = deletions.filter(d => d.reason === 'freshStart' && d.linkedCreate);
+				const orphanItems = deletions.filter(d => d.reason !== 'freshStart' || !d.linkedCreate);
+
+				// Handle orphan items - just keep the old events
+				for (const deletion of orphanItems) {
+					this.syncManager.removePendingDeletion(deletion.id);
+					this.syncManager.removeSync(deletion.taskId);
+					kept++;
+				}
+
+				// Handle Fresh Start items - keep old AND create new on new calendar
+				if (freshStartItems.length > 0) {
+					// Build create operations for batch API
+					const createOps: ChangeSetOperation[] = freshStartItems.map((deletion, index) => {
+						const task = deletion.linkedCreate!.task;
+						return {
+							id: `keepall_create_${Date.now()}_${index}`,
+							type: 'create' as const,
+							calendarId: deletion.linkedCreate!.newCalendarId,
+							task,
+							durationMinutes: this.settings.defaultEventDurationMinutes,
+							reminderMinutes: task.reminderMinutes || this.settings.defaultReminderMinutes,
+							timeZone,
+						};
+					});
+
+					// Execute creates in batch
+					const createResults = await this.batchApi.executeBatch(createOps);
+
+					// Process results
+					createResults.results.forEach((result, index) => {
+						const deletion = freshStartItems[index];
+						if (result.success && result.body?.id && deletion.linkedCreate) {
+							// Record the new sync (overwrites old entry)
+							this.syncManager.recordSync(
+								deletion.linkedCreate.task,
+								result.body.id,
+								deletion.linkedCreate.newCalendarId
+							);
+							created++;
+						}
+						// Remove from pending queue regardless of success
+						this.syncManager.removePendingDeletion(deletion.id);
+					});
+
+					kept += freshStartItems.length;
+				}
+
+				await this.saveSettings();
+				this.updateStatusBar();
+
+				let msg = `Kept ${kept} event${kept === 1 ? '' : 's'}`;
+				if (created > 0) msg += `, created ${created} on new calendar`;
+				new Notice(msg);
+			},
+			getCalendarName: (calendarId: string) => {
+				// Synchronous calendar name lookup from cache
+				return this.getCachedCalendarName(calendarId);
+			},
+			// Fresh Start specific callbacks
+			onDeleteAndRecreate: async (deletion: PendingDeletion) => {
+				if (!deletion.linkedCreate) {
+					// Fallback to regular delete if no linked create
+					try {
+						await this.calendarApi.deleteEvent(deletion.calendarId, deletion.eventId);
+					} catch (error: any) {
+						// 410 Gone means already deleted - treat as success
+						if (!(error?.message?.includes('410') || error?.status === 410)) {
+							console.error('Failed to delete event:', error);
+							new Notice(`Failed to delete event: ${error.message}`);
+							return;
+						}
+						console.log(`Event ${deletion.eventId} already deleted (410 Gone)`);
+					}
+					const calendarName = await this.getCalendarNameById(deletion.calendarId);
+					this.syncManager.confirmDeletion(deletion.id, calendarName);
+					this.syncManager.removeSync(deletion.taskId);
+					await this.saveSettings();
+					this.updateStatusBar();
+					new Notice(`Deleted "${deletion.eventTitle}" from calendar`);
+					return;
+				}
+
+				// Step 1: Delete the old event (handle 410 as success)
+				try {
+					await this.calendarApi.deleteEvent(deletion.calendarId, deletion.eventId);
+				} catch (error: any) {
+					// 410 Gone means already deleted - continue to create
+					if (!(error?.message?.includes('410') || error?.status === 410)) {
+						console.error('Failed to delete event:', error);
+						new Notice(`Failed to delete old event: ${error.message}`);
+						return;
+					}
+					console.log(`Event ${deletion.eventId} already deleted (410 Gone), proceeding with create`);
+				}
+
+				try {
+					// Step 2: Create the new event on the new calendar
+					const task = deletion.linkedCreate.task;
+					const reminderMinutes = task.reminderMinutes || this.settings.defaultReminderMinutes;
+					const timeZone = this.settings.timeZone || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+					const newEvent = await this.calendarApi.createEvent({
+						task,
+						calendarId: deletion.linkedCreate.newCalendarId,
+						durationMinutes: this.settings.defaultEventDurationMinutes,
+						reminderMinutes,
+						timeZone,
+					});
+
+					// Step 3: Update sync tracking with new event/calendar
+					this.syncManager.recordSync(task, newEvent.id, deletion.linkedCreate.newCalendarId);
+
+					// Step 4: Move to recently deleted and remove from pending
+					const oldCalendarName = await this.getCalendarNameById(deletion.calendarId);
+					this.syncManager.confirmDeletion(deletion.id, oldCalendarName);
+
+					await this.saveSettings();
+					this.updateStatusBar();
+
+					const newCalendarName = deletion.linkedCreate.newCalendarName ||
+						await this.getCalendarNameById(deletion.linkedCreate.newCalendarId);
+					new Notice(`Moved "${deletion.eventTitle}" to ${newCalendarName}`);
+				} catch (error: any) {
+					console.error('Failed to create replacement event:', error);
+					new Notice(`Failed to create replacement event: ${error.message}`);
+				}
+			},
+			onKeepOriginal: (deletion: PendingDeletion) => {
+				// Remove from pending queue, keep the old event
+				// Remove sync tracking so the task (with new tag/calendar) will create fresh on next sync
+				this.syncManager.removePendingDeletion(deletion.id);
+				this.syncManager.removeSync(deletion.taskId);
+				this.saveSettings();
+				this.updateStatusBar();
+				new Notice(`Keeping original "${deletion.eventTitle}" on calendar (task will sync to new calendar next time)`);
+			}
+		}).open();
+	}
+
+	/**
+	 * Get calendar name by ID (async version)
+	 */
+	private async getCalendarNameById(calendarId: string): Promise<string> {
+		try {
+			const calendars = await this.calendarApi.listCalendars();
+			// Populate cache while we have the data
+			for (const cal of calendars) {
+				this.calendarNameCache.set(cal.id, cal.summary);
+			}
+			const calendar = calendars.find(c => c.id === calendarId);
+			return calendar?.summary || calendarId;
+		} catch {
+			return calendarId;
+		}
+	}
+
+	/**
+	 * Refresh the calendar name cache from Google
+	 */
+	async refreshCalendarNameCache(): Promise<void> {
+		try {
+			const calendars = await this.calendarApi.listCalendars();
+			this.calendarNameCache.clear();
+			for (const cal of calendars) {
+				this.calendarNameCache.set(cal.id, cal.summary);
+			}
+		} catch (e) {
+			console.warn('Could not refresh calendar name cache:', e);
+		}
+	}
+
+	/**
+	 * Get cached calendar name (synchronous, for display)
+	 * Returns the actual calendar name if cached, otherwise the ID
+	 */
+	private getCachedCalendarName(calendarId: string): string {
+		// Check cache first - this has the actual calendar names
+		const cached = this.calendarNameCache.get(calendarId);
+		if (cached) {
+			return cached;
+		}
+		// Fallback to ID if not in cache
+		return calendarId;
 	}
 
 	/**
@@ -278,8 +687,105 @@ export default class ChronosPlugin extends Plugin {
 				this.settings.completedTaskBehavior,
 				this.settings.defaultEventDurationMinutes,
 				this.settings.defaultReminderMinutes,
-				timeZone
+				timeZone,
+				this.settings.safeMode
 			);
+
+			// Handle diverted deletions (Safety Net)
+			if (changeSet.divertedDeletions.length > 0) {
+				// Fetch calendar list once for name lookups and populate cache
+				let calendarMap: Record<string, string> = {};
+				try {
+					const calendars = await this.calendarApi.listCalendars();
+					for (const cal of calendars) {
+						calendarMap[cal.id] = cal.summary;
+						// Populate the cache for future synchronous lookups
+						this.calendarNameCache.set(cal.id, cal.summary);
+					}
+				} catch (e) {
+					console.warn('Could not fetch calendar list for names:', e);
+				}
+
+				// Phase 4: Batch-fetch event details for risk assessment
+				const eventDetailsMap: Record<string, GoogleEvent> = {};
+				const getOps: ChangeSetOperation[] = changeSet.divertedDeletions.map((diverted, index) => ({
+					id: `get_event_${index}`,
+					type: 'get' as const,
+					calendarId: diverted.calendarId,
+					eventId: diverted.eventId,
+				}));
+
+				if (getOps.length > 0) {
+					try {
+						const getResult = await this.batchApi.executeBatch(getOps);
+						for (const result of getResult.results) {
+							if (result.success && result.body) {
+								// Map result back to eventId
+								const opIndex = parseInt(result.id.replace('get_event_', ''), 10);
+								const diverted = changeSet.divertedDeletions[opIndex];
+								if (diverted) {
+									eventDetailsMap[diverted.eventId] = result.body;
+								}
+							}
+						}
+					} catch (e) {
+						console.warn('Could not fetch event details for risk assessment:', e);
+					}
+				}
+
+				for (const diverted of changeSet.divertedDeletions) {
+					// Get fetched event details (if available)
+					const eventDetails = eventDetailsMap[diverted.eventId];
+
+					// Determine risk indicators
+					const hasAttendees = !!(eventDetails?.attendees && eventDetails.attendees.length > 0);
+					const chronosSignature = 'Synced by Chronos for Obsidian';
+					const hasCustomDescription = !!(eventDetails?.description &&
+						!eventDetails.description.includes(chronosSignature));
+					const hasConferenceLink = !!(eventDetails?.conferenceData?.entryPoints &&
+						eventDetails.conferenceData.entryPoints.length > 0);
+
+					// Build event snapshot for potential restoration
+					const eventSnapshot = eventDetails ? {
+						summary: eventDetails.summary,
+						description: eventDetails.description,
+						location: eventDetails.location,
+						start: eventDetails.start,
+						end: eventDetails.end,
+						reminders: eventDetails.reminders,
+						colorId: eventDetails.colorId,
+						attendees: eventDetails.attendees,
+						conferenceData: eventDetails.conferenceData,
+					} : undefined;
+
+					const pendingDeletion: PendingDeletion = {
+						id: this.syncManager.generatePendingDeletionId(),
+						taskId: diverted.taskId,
+						eventId: diverted.eventId,
+						calendarId: diverted.calendarId,
+						eventTitle: diverted.eventTitle,
+						eventDate: diverted.eventDate,
+						eventTime: diverted.eventTime,
+						sourceFile: diverted.sourceFile,
+						reason: diverted.reason,
+						reasonDetail: diverted.reasonDetail,
+						originalTaskLine: diverted.originalTaskLine,
+						linkedCreate: diverted.linkedCreate ? {
+							newCalendarId: diverted.linkedCreate.newCalendarId,
+							newCalendarName: calendarMap[diverted.linkedCreate.newCalendarId] || diverted.linkedCreate.newCalendarId,
+							task: diverted.linkedCreate.task.task!,
+						} : undefined,
+						eventSnapshot,
+						hasAttendees,
+						hasCustomDescription,
+						hasConferenceLink,
+						queuedAt: new Date().toISOString(),
+					};
+					this.syncManager.addPendingDeletion(pendingDeletion);
+				}
+				await this.saveSettings();
+				this.updateStatusBar();
+			}
 
 			// Counters for results
 			let created = 0;
@@ -305,12 +811,24 @@ export default class ChronosPlugin extends Plugin {
 				const getResult = await this.executeBatchWithRetry(getOps);
 
 				// Attach fetched data to the original operations
+				// Also track which operations failed (event deleted externally)
 				for (const result of getResult.results) {
+					const originalId = result.id.replace('get_', '');
+					const op = changeSet.operations.find(o => o.id === originalId);
+
 					if (result.success && result.body) {
-						const originalId = result.id.replace('get_', '');
-						const op = changeSet.operations.find(o => o.id === originalId);
 						if (op) {
 							op.existingEventData = result.body;
+						}
+					} else if (result.status === 404 || result.status === 410) {
+						// Event was deleted externally
+						if (op && op.task) {
+							// Remove the sync record
+							const taskId = this.syncManager.generateTaskId(op.task);
+							this.syncManager.removeSync(taskId);
+							// Convert this operation from update to create
+							op.type = 'create';
+							op.eventId = undefined;
 						}
 					}
 				}
@@ -418,6 +936,16 @@ export default class ChronosPlugin extends Plugin {
 										error: 'Source calendar not accessible'
 									});
 								}
+							}
+							// Handle event-gone errors on updates (404 = Not Found, 410 = Gone)
+							// Event was deleted externally - remove sync record so it will be recreated next sync
+							else if (op.type === 'update' && (result.status === 404 || result.status === 410)) {
+								if (op.task) {
+									const taskId = this.syncManager.generateTaskId(op.task);
+									this.syncManager.removeSync(taskId);
+								}
+								// Don't count as failed - we're handling it gracefully
+								// It will be recreated on the next sync
 							} else {
 								this.logOperationFromBatch(op, false, errorMsg, batchId);
 
@@ -472,6 +1000,7 @@ export default class ChronosPlugin extends Plugin {
 
 				if (existenceCheckOps.length > 0) {
 					const checkResult = await this.executeBatchWithRetry(existenceCheckOps);
+
 					const toRecreate: ChangeSetOperation[] = [];
 
 					for (const result of checkResult.results) {
@@ -779,12 +1308,18 @@ export default class ChronosPlugin extends Plugin {
 	refreshAgendaViews(reloadColors: boolean = false): void {
 		const leaves = this.app.workspace.getLeavesOfType(AGENDA_VIEW_TYPE);
 		for (const leaf of leaves) {
-			const view = leaf.view as AgendaView;
-			view.setRefreshInterval(this.settings.agendaRefreshIntervalMinutes * 60 * 1000);
-			if (reloadColors) {
-				view.reloadColors();
+			const view = leaf.view;
+			// Safety check - ensure view is actually an AgendaView with the expected methods
+			if (view && typeof (view as any).setRefreshInterval === 'function') {
+				const agendaView = view as AgendaView;
+				agendaView.setRefreshInterval(this.settings.agendaRefreshIntervalMinutes * 60 * 1000);
+				if (reloadColors && typeof agendaView.reloadColors === 'function') {
+					agendaView.reloadColors();
+				}
+				if (typeof agendaView.refresh === 'function') {
+					agendaView.refresh();
+				}
 			}
-			view.refresh();
 		}
 	}
 
@@ -916,13 +1451,22 @@ export default class ChronosPlugin extends Plugin {
 		this.settings = Object.assign({}, DEFAULT_SETTINGS, data.settings);
 		this.tokens = data.tokens;
 		this.syncManager = new SyncManager(data.syncData);
+
+		// Auto-prune expired recently deleted records (Phase 5: Historical Recovery)
+		const pruned = this.syncManager.pruneExpiredDeletions();
+		if (pruned > 0) {
+			console.log(`Chronos: Pruned ${pruned} expired recently deleted record(s)`);
+			// Save immediately if we pruned anything
+			await this.saveSettings();
+		}
 	}
 
 	async saveSettings() {
+		const syncData = this.syncManager?.getSyncData();
 		const data: ChronosData = {
 			settings: this.settings,
 			tokens: this.tokens,
-			syncData: this.syncManager?.getSyncData(),
+			syncData: syncData,
 		};
 		await this.saveData(data);
 	}
@@ -1043,10 +1587,29 @@ class ChronosSettingTab extends PluginSettingTab {
 					dropdown.addOption('freshStart', '🧹 Fresh Start - Delete old, create new');
 					dropdown.setValue(this.plugin.settings.eventRoutingBehavior);
 					dropdown.onChange(async (value: 'preserve' | 'keepBoth' | 'freshStart') => {
-						this.plugin.settings.eventRoutingBehavior = value;
-						await this.plugin.saveSettings();
-						// Refresh to update description
-						this.display();
+						const previousValue = this.plugin.settings.eventRoutingBehavior;
+
+						// Show warning modal when selecting Fresh Start
+						if (value === 'freshStart' && previousValue !== 'freshStart') {
+							new FreshStartWarningModal(
+								this.plugin.app,
+								async () => {
+									// User confirmed - apply the change
+									this.plugin.settings.eventRoutingBehavior = value;
+									await this.plugin.saveSettings();
+									this.display();
+								},
+								() => {
+									// User cancelled - revert dropdown
+									dropdown.setValue(previousValue);
+								}
+							).open();
+						} else {
+							// Not selecting Fresh Start, apply immediately
+							this.plugin.settings.eventRoutingBehavior = value;
+							await this.plugin.saveSettings();
+							this.display();
+						}
 					});
 				});
 
@@ -1107,7 +1670,7 @@ class ChronosSettingTab extends PluginSettingTab {
 						}
 					}));
 
-			new Setting(containerEl)
+			const completedTaskSetting = new Setting(containerEl)
 				.setName('When task is completed')
 				.setDesc('What to do with calendar events when their tasks are marked complete')
 				.addDropdown(dropdown => dropdown
@@ -1117,7 +1680,14 @@ class ChronosSettingTab extends PluginSettingTab {
 					.onChange(async (value: 'delete' | 'markComplete') => {
 						this.plugin.settings.completedTaskBehavior = value;
 						await this.plugin.saveSettings();
+						// Toggle warning visibility
+						completedTaskWarning.style.display = value === 'delete' ? 'block' : 'none';
 					}));
+
+			// Warning shown when delete mode is selected
+			const completedTaskWarning = containerEl.createDiv({ cls: 'chronos-completed-task-warning' });
+			completedTaskWarning.innerHTML = `<strong>Warning:</strong> Events WILL be deleted when you check tasks as complete with this setting enabled.`;
+			completedTaskWarning.style.display = this.plugin.settings.completedTaskBehavior === 'delete' ? 'block' : 'none';
 
 			// Timezone setting
 			const currentTz = this.plugin.getTimeZone();
@@ -1185,6 +1755,52 @@ class ChronosSettingTab extends PluginSettingTab {
 						this.display();
 					});
 				});
+
+			// Safety Net Section
+			containerEl.createEl('h3', { text: 'Safety Net' });
+
+			const safetyNetDesc = containerEl.createEl('p', { cls: 'chronos-safety-net-desc' });
+			safetyNetDesc.textContent = 'Safety Net protects against accidental data loss by requiring your approval before deleting calendar events.';
+
+			new Setting(containerEl)
+				.setName('Safe Mode')
+				.setDesc('When enabled, deletions require your approval before executing')
+				.addToggle(toggle => toggle
+					.setValue(this.plugin.settings.safeMode)
+					.onChange(async (value) => {
+						if (!value) {
+							// User is trying to disable Safe Mode - show warning
+							new PowerUserWarningModal(this.app, {
+								onConfirm: async () => {
+									this.plugin.settings.safeMode = false;
+									await this.plugin.saveSettings();
+									safeModeStatus.textContent = 'Status: Power User Mode (deletions are automatic)';
+									safeModeStatus.classList.remove('chronos-safe-mode-on');
+									safeModeStatus.classList.add('chronos-safe-mode-off');
+								},
+								onCancel: () => {
+									// Reset toggle back to true
+									toggle.setValue(true);
+								}
+							}).open();
+						} else {
+							this.plugin.settings.safeMode = true;
+							await this.plugin.saveSettings();
+							safeModeStatus.textContent = 'Status: Protected (deletions require approval)';
+							safeModeStatus.classList.remove('chronos-safe-mode-off');
+							safeModeStatus.classList.add('chronos-safe-mode-on');
+						}
+					}));
+
+			// Status indicator
+			const safeModeStatus = containerEl.createDiv({ cls: 'chronos-safe-mode-status' });
+			if (this.plugin.settings.safeMode) {
+				safeModeStatus.textContent = 'Status: Protected (deletions require approval)';
+				safeModeStatus.classList.add('chronos-safe-mode-on');
+			} else {
+				safeModeStatus.textContent = 'Status: Power User Mode (deletions are automatic)';
+				safeModeStatus.classList.add('chronos-safe-mode-off');
+			}
 
 			// Agenda Settings Section
 			containerEl.createEl('h3', { text: 'Agenda Sidebar' });
@@ -1919,8 +2535,10 @@ class SyncLogModal extends Modal {
 		contentEl.createEl('h2', { text: 'Sync History' });
 
 		const log = this.plugin.syncManager.getSyncLog();
+		const recentlyDeleted = this.plugin.syncManager.getRecentlyDeleted();
 
-		if (log.length === 0) {
+		// If both are empty, show empty state
+		if (log.length === 0 && recentlyDeleted.length === 0) {
 			contentEl.createEl('p', {
 				text: 'No sync operations recorded yet.',
 				cls: 'chronos-empty-log'
@@ -1932,32 +2550,38 @@ class SyncLogModal extends Modal {
 			return;
 		}
 
-		// Group entries by batchId
-		const batches = this.groupEntriesByBatch(log);
+		// Sync History Section
+		if (log.length > 0) {
+			// Group entries by batchId
+			const batches = this.groupEntriesByBatch(log);
 
-		// Header with count and clear button
-		const header = contentEl.createDiv({ cls: 'chronos-log-header' });
-		header.createEl('span', {
-			text: `${batches.length} sync${batches.length === 1 ? '' : 's'} (${log.length} operations)`,
-			cls: 'chronos-log-count'
-		});
+			// Header with count and clear button
+			const header = contentEl.createDiv({ cls: 'chronos-log-header' });
+			header.createEl('span', {
+				text: `${batches.length} sync${batches.length === 1 ? '' : 's'} (${log.length} operations)`,
+				cls: 'chronos-log-count'
+			});
 
-		const clearBtn = header.createEl('button', {
-			text: 'Clear Log',
-			cls: 'chronos-clear-log-btn'
-		});
-		clearBtn.addEventListener('click', () => {
-			this.plugin.syncManager.clearSyncLog();
-			this.plugin.saveSettings();
-			this.onOpen(); // Refresh
-		});
+			const clearBtn = header.createEl('button', {
+				text: 'Clear Log',
+				cls: 'chronos-clear-log-btn'
+			});
+			clearBtn.addEventListener('click', () => {
+				this.plugin.syncManager.clearSyncLog();
+				this.plugin.saveSettings();
+				this.onOpen(); // Refresh
+			});
 
-		// Render batch cards
-		const batchContainer = contentEl.createDiv({ cls: 'chronos-batch-container' });
+			// Render batch cards
+			const batchContainer = contentEl.createDiv({ cls: 'chronos-batch-container' });
 
-		for (const batch of batches) {
-			this.renderBatchCard(batchContainer, batch);
+			for (const batch of batches) {
+				this.renderBatchCard(batchContainer, batch);
+			}
 		}
+
+		// Recently Deleted Section
+		this.renderRecentlyDeletedSection(contentEl, recentlyDeleted);
 	}
 
 	/**
@@ -2149,6 +2773,230 @@ class SyncLogModal extends Modal {
 				text: `Error: ${entry.errorMessage}`,
 				cls: 'chronos-log-error-msg'
 			});
+		}
+	}
+
+	/**
+	 * Render the Recently Deleted section (Phase 5: Historical Recovery)
+	 */
+	private renderRecentlyDeletedSection(container: HTMLElement, records: DeletedEventRecord[]): void {
+		// Section header
+		const section = container.createDiv({ cls: 'chronos-recently-deleted-section' });
+
+		const sectionHeader = section.createDiv({ cls: 'chronos-section-header chronos-clickable' });
+		const arrow = sectionHeader.createSpan({ cls: 'chronos-collapse-arrow', text: '▶' });
+		sectionHeader.createEl('h3', { text: `Recently Deleted (${records.length})` });
+
+		const sectionContent = section.createDiv({ cls: 'chronos-recently-deleted-content chronos-collapsed' });
+
+		// Toggle collapse
+		sectionHeader.addEventListener('click', () => {
+			const isCollapsed = sectionContent.hasClass('chronos-collapsed');
+			if (isCollapsed) {
+				sectionContent.removeClass('chronos-collapsed');
+				arrow.setText('▼');
+			} else {
+				sectionContent.addClass('chronos-collapsed');
+				arrow.setText('▶');
+			}
+		});
+
+		if (records.length === 0) {
+			sectionContent.createEl('p', {
+				text: 'No recently deleted events.',
+				cls: 'chronos-empty-section'
+			});
+			return;
+		}
+
+		// Description
+		sectionContent.createEl('p', {
+			text: 'Events you\'ve deleted in the last 30 days. You can restore them to create new calendar events.',
+			cls: 'chronos-section-desc'
+		});
+
+		// Clear all button
+		const clearAllContainer = sectionContent.createDiv({ cls: 'chronos-recently-deleted-actions' });
+		const clearAllBtn = clearAllContainer.createEl('button', {
+			text: 'Clear All',
+			cls: 'chronos-clear-log-btn'
+		});
+		clearAllBtn.addEventListener('click', () => {
+			// Clear all recently deleted
+			for (const record of records) {
+				this.plugin.syncManager.removeRecentlyDeleted(record.id);
+			}
+			this.plugin.saveSettings();
+			this.onOpen(); // Refresh
+		});
+
+		// List of deleted events
+		const list = sectionContent.createDiv({ cls: 'chronos-recently-deleted-list' });
+
+		// Sort by deletedAt descending (most recent first)
+		const sortedRecords = [...records].sort((a, b) =>
+			new Date(b.deletedAt).getTime() - new Date(a.deletedAt).getTime()
+		);
+
+		for (const record of sortedRecords) {
+			this.renderDeletedRecord(list, record);
+		}
+	}
+
+	/**
+	 * Render a single deleted event record
+	 */
+	private renderDeletedRecord(container: HTMLElement, record: DeletedEventRecord): void {
+		const item = container.createDiv({ cls: 'chronos-deleted-record' });
+
+		// Title row
+		const titleRow = item.createDiv({ cls: 'chronos-deleted-record-header' });
+		titleRow.createSpan({
+			text: '🗑️',
+			cls: 'chronos-deleted-record-icon'
+		});
+		titleRow.createSpan({
+			text: record.eventTitle,
+			cls: 'chronos-deleted-record-title'
+		});
+
+		// Details
+		const details = item.createDiv({ cls: 'chronos-deleted-record-details' });
+
+		// Date and calendar
+		const dateStr = record.eventDate;
+		details.createDiv({
+			text: `📅 ${dateStr} • 📆 ${record.calendarName}`,
+			cls: 'chronos-deleted-record-info'
+		});
+
+		// Deleted timestamp with confirmation info
+		const deletedAt = new Date(record.deletedAt);
+		const deletedStr = deletedAt.toLocaleString(undefined, {
+			month: 'short',
+			day: 'numeric',
+			hour: 'numeric',
+			minute: '2-digit'
+		});
+		const confirmedByStr = record.confirmedBy === 'user' ? 'by you' : 'automatically';
+		details.createDiv({
+			text: `Deleted: ${deletedStr} (${confirmedByStr})`,
+			cls: 'chronos-deleted-record-time'
+		});
+
+		// Actions
+		const actions = item.createDiv({ cls: 'chronos-deleted-record-actions' });
+
+		// Only show Restore button if we have a snapshot
+		if (record.eventSnapshot) {
+			const restoreBtn = actions.createEl('button', {
+				text: 'Restore Event',
+				cls: 'chronos-btn-primary chronos-btn-small'
+			});
+			restoreBtn.addEventListener('click', () => {
+				this.openRestoreModal(record);
+			});
+		} else {
+			actions.createEl('span', {
+				text: 'No snapshot available',
+				cls: 'chronos-deleted-record-no-snapshot'
+			});
+		}
+
+		// Remove button
+		const removeBtn = actions.createEl('button', {
+			text: 'Remove',
+			cls: 'chronos-btn-secondary chronos-btn-small'
+		});
+		removeBtn.addEventListener('click', () => {
+			this.plugin.syncManager.removeRecentlyDeleted(record.id);
+			this.plugin.saveSettings();
+			this.onOpen(); // Refresh
+		});
+	}
+
+	/**
+	 * Open the EventRestoreModal for a deleted record
+	 */
+	private openRestoreModal(record: DeletedEventRecord): void {
+		new EventRestoreModal(this.app, record, {
+			onRestore: async (rec) => {
+				await this.restoreEvent(rec);
+			},
+			onCancel: () => {
+				// Nothing to do
+			}
+		}).open();
+	}
+
+	/**
+	 * Restore a deleted event by creating a new event from its snapshot
+	 */
+	private async restoreEvent(record: DeletedEventRecord): Promise<void> {
+		if (!record.eventSnapshot) {
+			new Notice('Cannot restore: no event snapshot available');
+			return;
+		}
+
+		const snapshot = record.eventSnapshot;
+
+		try {
+			// Build the event body for Google Calendar API
+			const eventBody: any = {
+				summary: snapshot.summary,
+				start: snapshot.start,
+				end: snapshot.end,
+			};
+
+			// Add optional fields if present
+			if (snapshot.description) {
+				eventBody.description = snapshot.description;
+			}
+			if (snapshot.location) {
+				eventBody.location = snapshot.location;
+			}
+			if (snapshot.colorId) {
+				eventBody.colorId = snapshot.colorId;
+			}
+			if (snapshot.reminders) {
+				eventBody.reminders = snapshot.reminders;
+			}
+			// Note: We don't restore attendees automatically as they will receive new invitations
+			// This is mentioned in the limitations warning
+
+			// Create the event using the calendar API
+			const createdEvent = await this.plugin.calendarApi.createEvent({
+				task: {
+					id: 'restore_' + Date.now(),
+					title: snapshot.summary,
+					date: snapshot.start.date || snapshot.start.dateTime?.split('T')[0] || '',
+					time: snapshot.start.dateTime ? snapshot.start.dateTime.split('T')[1]?.substring(0, 5) : null,
+					datetime: snapshot.start.dateTime ? new Date(snapshot.start.dateTime) : new Date(snapshot.start.date || ''),
+					isAllDay: !snapshot.start.dateTime,
+					filePath: '',
+					lineNumber: 0,
+					rawText: '',
+					completed: false,
+					reminderMinutes: snapshot.reminders?.overrides?.map(o => o.minutes),
+				},
+				calendarId: record.calendarId,
+				durationMinutes: this.plugin.settings.defaultEventDurationMinutes,
+				reminderMinutes: snapshot.reminders?.overrides?.map(o => o.minutes) || this.plugin.settings.defaultReminderMinutes,
+				timeZone: this.plugin.getTimeZone(),
+			});
+
+			// Remove from recently deleted
+			this.plugin.syncManager.removeRecentlyDeleted(record.id);
+			await this.plugin.saveSettings();
+
+			new Notice(`Restored "${record.eventTitle}" to ${record.calendarName}`);
+
+			// Refresh the modal
+			this.onOpen();
+		} catch (error: any) {
+			console.error('Failed to restore event:', error);
+			new Notice(`Failed to restore event: ${error.message}`);
+			throw error;
 		}
 	}
 
