@@ -1,8 +1,8 @@
 # ADR Priority List - Chronos
 
-**Last Updated:** January 4, 2026
+**Last Updated:** January 8, 2026
 **Version:** 0.1.0
-**Status:** Active Development - Phase 10 Complete (Batch API Calls)
+**Status:** Active Development - Phase 11 Complete (Safety Net)
 
 ---
 
@@ -250,6 +250,44 @@ Each user creates their own Google Cloud project and provides their own Client I
 - Existence verification: Batched GET for unchanged events
 
 **Phase 10 Deliverable:** Large calendar migrations complete in seconds instead of minutes. ✓
+
+---
+
+## Phase 11: Safety Net - COMPLETE ✓
+
+**Goal:** Protect against accidental data loss by requiring approval before deletions.
+
+| Order | Feature | Status | Notes |
+|-------|---------|--------|-------|
+| 58 | Pending deletions queue | ✓ Complete | `pendingDeletions` array in sync data |
+| 59 | Status bar indicator | ✓ Complete | Shows count, click to review |
+| 60 | Deletion review modal | ✓ Complete | Delete/Keep/Restore per item, batch operations |
+| 61 | Task restore modal | ✓ Complete | Copy task line to clipboard for re-pasting |
+| 62 | Fresh Start integration | ✓ Complete | Paired delete+create display, warnings |
+| 63 | Event details & risk display | ✓ Complete | Fetch attendees, conference links, descriptions |
+| 64 | High-risk indicators | ✓ Complete | Visual warnings for events with valuable data |
+| 65 | Recently deleted recovery | ✓ Complete | Event snapshots, restore from history |
+| 66 | Auto-prune (30 days) | ✓ Complete | Clean up old deletion records |
+| 67 | Power User mode | ✓ Complete | Toggle to disable Safety Net |
+| 68 | Warning modals | ✓ Complete | Fresh Start warning, Power User warning |
+
+**Key Features:**
+- Deletions queue instead of executing immediately (Safe Mode default)
+- Review modal with per-item and batch actions
+- Risk indicators: 👥 attendees, 📹 conference link, 📝 custom description
+- Task line restoration via copy-to-clipboard
+- Event restoration from 30-day snapshot history
+- Power User mode for experienced users who want automatic deletions
+
+**New Files:**
+- `src/deletionReviewModal.ts` - Main review interface
+- `src/taskRestoreModal.ts` - Task line recovery
+- `src/freshStartWarningModal.ts` - Calendar rerouting warning
+- `src/powerUserWarningModal.ts` - Safe Mode disable warning
+- `src/eventRestoreModal.ts` - Event snapshot restoration
+- `docs/SAFETY-NET.md` - User documentation
+
+**Phase 11 Deliverable:** Users are protected from accidental deletions with full visibility and recovery options. ✓
 
 ---
 
