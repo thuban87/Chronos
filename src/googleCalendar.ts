@@ -14,6 +14,7 @@ export interface GoogleEvent {
     id: string;
     summary: string;
     description?: string;
+    location?: string;
     start: { dateTime?: string; date?: string; timeZone?: string };
     end: { dateTime?: string; date?: string; timeZone?: string };
     htmlLink?: string;
@@ -23,6 +24,11 @@ export interface GoogleEvent {
     reminders?: {
         useDefault: boolean;
         overrides?: Array<{ method: string; minutes: number }>;
+    };
+    attendees?: Array<{ email: string; displayName?: string; responseStatus?: string }>;
+    conferenceData?: {
+        entryPoints?: Array<{ entryPointType: string; uri?: string; label?: string }>;
+        conferenceSolution?: { name?: string };
     };
 }
 
@@ -312,6 +318,36 @@ export class GoogleCalendarApi {
         }
 
         return updateResponse.json;
+    }
+
+    /**
+     * Fetch a single event by ID
+     * Returns the full event data including attendees, description, conferenceData, etc.
+     */
+    async getEvent(calendarId: string, eventId: string): Promise<GoogleEvent | null> {
+        const token = await this.getAccessToken();
+        if (!token) {
+            throw new Error('Not authenticated');
+        }
+
+        try {
+            const response = await requestUrl({
+                url: `${CALENDAR_API_BASE}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
+                method: 'GET',
+                headers: {
+                    'Authorization': `Bearer ${token}`,
+                },
+            });
+
+            if (response.status !== 200) {
+                return null;
+            }
+
+            return response.json;
+        } catch {
+            // Event doesn't exist or other error
+            return null;
+        }
     }
 
     /**

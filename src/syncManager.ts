@@ -1,5 +1,5 @@
 import { ChronosTask } from './taskParser';
-import { ChangeSet, ChangeSetOperation, generateOperationId } from './batchApi';
+import { ChangeSet, ChangeSetOperation, DivertedDeletion, generateOperationId } from './batchApi';
 
 /**
  * A log entry for sync operations
@@ -50,6 +50,103 @@ export interface PendingOperation {
 }
 
 /**
+ * A pending deletion awaiting user approval (Safety Net)
+ */
+export interface PendingDeletion {
+    /** Unique ID for this pending item */
+    id: string;
+    /** The Chronos task ID */
+    taskId: string;
+    /** Google Calendar event ID */
+    eventId: string;
+    /** Which calendar the event is on */
+    calendarId: string;
+
+    // For display
+    /** Event title */
+    eventTitle: string;
+    /** Event date (YYYY-MM-DD) */
+    eventDate: string;
+    /** Event time (HH:mm) or null for all-day */
+    eventTime?: string | null;
+    /** Which file the task was in */
+    sourceFile: string;
+
+    // Why is this being deleted?
+    /** Reason for deletion */
+    reason: 'orphaned' | 'freshStart';
+    /** Human-readable reason detail */
+    reasonDetail?: string;
+
+    // For task line restoration
+    /** The reconstructed task line for copy/paste */
+    originalTaskLine: string;
+
+    // For freshStart - linked creation info
+    linkedCreate?: {
+        newCalendarId: string;
+        newCalendarName: string;
+        task: ChronosTask;
+    };
+
+    // For event restoration (stores event details)
+    eventSnapshot?: {
+        summary: string;
+        description?: string;
+        location?: string;
+        start: { dateTime?: string; date?: string; timeZone?: string };
+        end: { dateTime?: string; date?: string; timeZone?: string };
+        reminders?: { useDefault: boolean; overrides?: Array<{ method: string; minutes: number }> };
+        colorId?: string;
+        attendees?: Array<{ email: string; displayName?: string }>;
+        conferenceData?: unknown;
+    };
+
+    // Risk indicators (populated from event snapshot)
+    hasAttendees?: boolean;
+    hasCustomDescription?: boolean;
+    hasConferenceLink?: boolean;
+
+    /** When this deletion was queued */
+    queuedAt: string;
+}
+
+/**
+ * A record of a deleted event (for historical recovery)
+ */
+export interface DeletedEventRecord {
+    /** Unique ID */
+    id: string;
+    /** Event title */
+    eventTitle: string;
+    /** Event date */
+    eventDate: string;
+    /** Calendar name */
+    calendarName: string;
+    /** Calendar ID */
+    calendarId: string;
+    /** When the deletion was confirmed */
+    deletedAt: string;
+    /** How the deletion was confirmed */
+    confirmedBy: 'user' | 'auto';
+
+    // For event restoration
+    eventSnapshot?: {
+        summary: string;
+        description?: string;
+        location?: string;
+        start: { dateTime?: string; date?: string; timeZone?: string };
+        end: { dateTime?: string; date?: string; timeZone?: string };
+        reminders?: { useDefault: boolean; overrides?: Array<{ method: string; minutes: number }> };
+        colorId?: string;
+        attendees?: Array<{ email: string; displayName?: string }>;
+    };
+
+    /** When this record expires (for auto-prune) */
+    expiresAt: string;
+}
+
+/**
  * Information about a synced task stored in plugin data
  */
 export interface SyncedTaskInfo {
@@ -85,6 +182,10 @@ export interface ChronosSyncData {
     pendingOperations: PendingOperation[];
     /** Log of recent sync operations */
     syncLog: SyncLogEntry[];
+    /** Pending deletions awaiting user approval (Safety Net) */
+    pendingDeletions: PendingDeletion[];
+    /** Recently deleted events for historical recovery */
+    recentlyDeleted: DeletedEventRecord[];
 }
 
 /**
@@ -132,6 +233,8 @@ export class SyncManager {
             lastSyncAt: null,
             pendingOperations: [],
             syncLog: [],
+            pendingDeletions: [],
+            recentlyDeleted: [],
         };
         // Ensure arrays exist (for backwards compatibility)
         if (!this.syncData.pendingOperations) {
@@ -139,6 +242,12 @@ export class SyncManager {
         }
         if (!this.syncData.syncLog) {
             this.syncData.syncLog = [];
+        }
+        if (!this.syncData.pendingDeletions) {
+            this.syncData.pendingDeletions = [];
+        }
+        if (!this.syncData.recentlyDeleted) {
+            this.syncData.recentlyDeleted = [];
         }
     }
 
@@ -650,6 +759,8 @@ export class SyncManager {
     /**
      * Build a ChangeSet from sync diff results
      * This collects all operations before batching
+     *
+     * @param safeMode - When true, orphaned and freshStart deletions are diverted for user approval
      */
     buildChangeSet(
         diff: MultiCalendarSyncDiff,
@@ -658,10 +769,12 @@ export class SyncManager {
         completedTaskBehavior: 'delete' | 'markComplete',
         defaultDurationMinutes: number,
         defaultReminderMinutes: number[],
-        timeZone: string
+        timeZone: string,
+        safeMode: boolean = true
     ): ChangeSet {
         const operations: ChangeSetOperation[] = [];
         const needsEventData: ChangeSetOperation[] = [];
+        const divertedDeletions: DivertedDeletion[] = [];
 
         // 1. CREATE operations (new tasks)
         for (const { task, targetCalendarId } of diff.toCreate) {
@@ -700,7 +813,7 @@ export class SyncManager {
             const reminderMinutes = task.reminderMinutes || defaultReminderMinutes;
 
             if (eventRoutingBehavior === 'preserve') {
-                // Move the event
+                // Move the event - no deletion, no diversion needed
                 operations.push({
                     id: generateOperationId('move'),
                     type: 'move',
@@ -710,7 +823,7 @@ export class SyncManager {
                     task,
                 });
             } else if (eventRoutingBehavior === 'keepBoth') {
-                // Create new event (old one stays dormant)
+                // Create new event (old one stays dormant) - no deletion, no diversion needed
                 operations.push({
                     id: generateOperationId('create'),
                     type: 'create',
@@ -721,26 +834,63 @@ export class SyncManager {
                     timeZone,
                 });
             } else if (eventRoutingBehavior === 'freshStart') {
-                // Delete old, create new
-                operations.push({
-                    id: generateOperationId('delete'),
-                    type: 'delete',
-                    calendarId: oldCalendarId,
-                    eventId,
-                });
-                operations.push({
-                    id: generateOperationId('create'),
-                    type: 'create',
-                    calendarId: newCalendarId,
-                    task,
-                    durationMinutes: defaultDurationMinutes,
-                    reminderMinutes,
-                    timeZone,
-                });
+                // Delete old, create new - DIVERT if safeMode
+                const taskId = this.generateTaskId(task);
+                const syncInfo = this.getSyncInfo(taskId);
+
+                if (safeMode && syncInfo) {
+                    // Divert the deletion for user approval
+                    const createOp: ChangeSetOperation = {
+                        id: generateOperationId('create'),
+                        type: 'create',
+                        calendarId: newCalendarId,
+                        task,
+                        durationMinutes: defaultDurationMinutes,
+                        reminderMinutes,
+                        timeZone,
+                    };
+
+                    divertedDeletions.push({
+                        taskId,
+                        eventId,
+                        calendarId: oldCalendarId,
+                        eventTitle: syncInfo.title || task.title,
+                        eventDate: syncInfo.date || task.date,
+                        eventTime: syncInfo.time,
+                        sourceFile: syncInfo.filePath,
+                        reason: 'freshStart',
+                        reasonDetail: `Calendar changed - tag or default calendar updated`,
+                        originalTaskLine: this.reconstructTaskLine(syncInfo),
+                        linkedCreate: {
+                            newCalendarId,
+                            task: createOp,
+                        },
+                    });
+                } else {
+                    // No safeMode - execute immediately
+                    operations.push({
+                        id: generateOperationId('delete'),
+                        type: 'delete',
+                        calendarId: oldCalendarId,
+                        eventId,
+                    });
+                    operations.push({
+                        id: generateOperationId('create'),
+                        type: 'create',
+                        calendarId: newCalendarId,
+                        task,
+                        durationMinutes: defaultDurationMinutes,
+                        reminderMinutes,
+                        timeZone,
+                    });
+                }
             }
         }
 
         // 4. COMPLETED task operations
+        // Note: Completed task deletions are NOT diverted - user explicitly:
+        //   1. Checked the checkbox (explicit action)
+        //   2. Chose "delete" mode in settings (explicit preference)
         for (const { task, syncInfo } of completedTasks) {
             if (completedTaskBehavior === 'delete') {
                 operations.push({
@@ -764,19 +914,168 @@ export class SyncManager {
             }
         }
 
-        // 5. ORPHANED task operations (deleted from vault)
+        // 5. ORPHANED task operations (deleted from vault) - DIVERT if safeMode
         for (const taskId of diff.orphaned) {
             const syncInfo = this.getSyncInfo(taskId);
             if (syncInfo) {
-                operations.push({
-                    id: generateOperationId('delete'),
-                    type: 'delete',
-                    calendarId: syncInfo.calendarId,
-                    eventId: syncInfo.eventId,
-                });
+                if (safeMode) {
+                    // Divert the deletion for user approval
+                    divertedDeletions.push({
+                        taskId,
+                        eventId: syncInfo.eventId,
+                        calendarId: syncInfo.calendarId,
+                        eventTitle: syncInfo.title || 'Untitled',
+                        eventDate: syncInfo.date || 'unknown',
+                        eventTime: syncInfo.time,
+                        sourceFile: syncInfo.filePath,
+                        reason: 'orphaned',
+                        reasonDetail: `Task line deleted from ${syncInfo.filePath}`,
+                        originalTaskLine: this.reconstructTaskLine(syncInfo),
+                    });
+                } else {
+                    // No safeMode - execute immediately
+                    operations.push({
+                        id: generateOperationId('delete'),
+                        type: 'delete',
+                        calendarId: syncInfo.calendarId,
+                        eventId: syncInfo.eventId,
+                    });
+                }
             }
         }
 
-        return { operations, needsEventData };
+        return { operations, needsEventData, divertedDeletions };
+    }
+
+    // =====================
+    // Safety Net: Pending Deletions
+    // =====================
+
+    /**
+     * Add a pending deletion for user review
+     */
+    addPendingDeletion(deletion: PendingDeletion): void {
+        // Check if this deletion is already queued (by taskId)
+        const existingIndex = this.syncData.pendingDeletions.findIndex(
+            d => d.taskId === deletion.taskId
+        );
+
+        if (existingIndex >= 0) {
+            // Update existing
+            this.syncData.pendingDeletions[existingIndex] = deletion;
+        } else {
+            this.syncData.pendingDeletions.push(deletion);
+        }
+    }
+
+    /**
+     * Get all pending deletions
+     */
+    getPendingDeletions(): PendingDeletion[] {
+        return [...this.syncData.pendingDeletions];
+    }
+
+    /**
+     * Get count of pending deletions
+     */
+    getPendingDeletionCount(): number {
+        return this.syncData.pendingDeletions.length;
+    }
+
+    /**
+     * Remove a pending deletion by ID
+     */
+    removePendingDeletion(id: string): void {
+        this.syncData.pendingDeletions = this.syncData.pendingDeletions.filter(
+            d => d.id !== id
+        );
+    }
+
+    /**
+     * Clear all pending deletions
+     */
+    clearPendingDeletions(): void {
+        this.syncData.pendingDeletions = [];
+    }
+
+    /**
+     * Move a pending deletion to the recently deleted list
+     * Called when user confirms a deletion
+     */
+    confirmDeletion(pendingId: string, calendarName: string): DeletedEventRecord | null {
+        const pending = this.syncData.pendingDeletions.find(d => d.id === pendingId);
+        if (!pending) return null;
+
+        // Create a deleted record
+        const deletedRecord: DeletedEventRecord = {
+            id: this.generateBatchId(), // Reuse for unique ID
+            eventTitle: pending.eventTitle,
+            eventDate: pending.eventDate,
+            calendarName,
+            calendarId: pending.calendarId,
+            deletedAt: new Date().toISOString(),
+            confirmedBy: 'user',
+            eventSnapshot: pending.eventSnapshot,
+            expiresAt: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(), // 30 days
+        };
+
+        // Add to recently deleted
+        this.syncData.recentlyDeleted.push(deletedRecord);
+
+        // Remove from pending
+        this.removePendingDeletion(pendingId);
+
+        return deletedRecord;
+    }
+
+    // =====================
+    // Safety Net: Recently Deleted
+    // =====================
+
+    /**
+     * Get all recently deleted events
+     */
+    getRecentlyDeleted(): DeletedEventRecord[] {
+        return [...this.syncData.recentlyDeleted];
+    }
+
+    /**
+     * Remove a recently deleted record by ID
+     */
+    removeRecentlyDeleted(id: string): void {
+        this.syncData.recentlyDeleted = this.syncData.recentlyDeleted.filter(
+            r => r.id !== id
+        );
+    }
+
+    /**
+     * Prune expired recently deleted records (older than 30 days)
+     */
+    pruneExpiredDeletions(): number {
+        const now = new Date().toISOString();
+        const before = this.syncData.recentlyDeleted.length;
+        this.syncData.recentlyDeleted = this.syncData.recentlyDeleted.filter(
+            r => r.expiresAt > now
+        );
+        return before - this.syncData.recentlyDeleted.length;
+    }
+
+    /**
+     * Reconstruct a task line from sync info
+     * Used for the "Restore" feature in Safety Net
+     */
+    reconstructTaskLine(syncInfo: SyncedTaskInfo): string {
+        let line = `- [ ] ${syncInfo.title || 'Untitled'} 📅 ${syncInfo.date || 'unknown'}`;
+        if (syncInfo.time) {
+            line += ` ⏰ ${syncInfo.time}`;
+        }
+        return line;
+    }
+
+    /**
+     * Generate a unique ID for pending deletions
+     */
+    generatePendingDeletionId(): string {
+        return 'pd_' + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
     }
 }

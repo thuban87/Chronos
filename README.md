@@ -9,11 +9,14 @@ Chronos syncs your Obsidian tasks with Google Calendar, giving you reliable remi
 - **Manual sync** via command palette or status bar click
 - **All-day events** for tasks without a time
 - **Timed events** with customizable duration and reminders
+- **Multi-calendar support** - route tasks to different calendars using tags
+- **Safety Net** - deletion protection requires your approval before removing events
 - **Duplicate prevention** - smart tracking prevents re-creating events
 - **Change detection** - editing a task updates the calendar event
 - **Completion handling** - choose to delete or mark events when tasks are completed
 - **Offline queue** - failed syncs are automatically retried
 - **No-sync marker** - exclude specific tasks with the `🚫` emoji
+- **Custom reminders** - override default reminders per task with `🔔` syntax
 
 ## Installation
 
@@ -117,6 +120,8 @@ Access via Command Palette (`Ctrl/Cmd + P`):
 | Chronos: Sync tasks to Google Calendar now | Manually trigger a sync |
 | Chronos: Scan vault for sync-eligible tasks | View all tasks that will be synced |
 | Chronos: Insert date/time for task | Open modal to insert date/time markers |
+| Chronos: Review pending deletions | Review and approve/reject pending event deletions |
+| Chronos: View sync history | View sync log and recently deleted events |
 
 ## Status Bar
 
@@ -149,6 +154,42 @@ The status bar shows:
 ### Externally Deleted Events
 - If you delete an event directly in Google Calendar, Chronos will recreate it on next sync
 - This ensures your tasks always have reminders
+
+## Safety Net
+
+Safety Net protects against accidental data loss by requiring your approval before Chronos deletes any calendar events. This is enabled by default.
+
+### How It Works
+
+When Chronos detects it needs to delete an event (e.g., you deleted a task line), it doesn't delete immediately. Instead:
+
+1. The event is added to a **pending deletions queue**
+2. A counter appears in the status bar showing pending items
+3. Click the counter to review and approve/reject each deletion
+
+### What Triggers the Safety Net
+
+- **Deleted task lines**: When you delete a task from your notes
+- **Calendar rerouting**: When using Fresh Start mode and a task moves to a different calendar
+
+### Review Modal Options
+
+For each pending deletion, you can:
+- **Delete Event**: Confirm the deletion
+- **Keep Event**: Keep the calendar event, stop tracking the task
+- **Restore**: Copy the original task line to paste back into your notes
+
+### Power User Mode
+
+Experienced users can disable Safety Net in Settings → Chronos → Safety Net. In Power User mode, deletions happen immediately without confirmation.
+
+### Recently Deleted
+
+View Sync History to see recently deleted events (last 30 days). You can restore events by creating new ones from saved snapshots.
+
+> **Note**: Restored events are new - they won't have the same ID, and attendees would need to be re-invited.
+
+For detailed documentation, see [docs/SAFETY-NET.md](docs/SAFETY-NET.md).
 
 ## Offline Handling
 
