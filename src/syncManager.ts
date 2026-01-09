@@ -1,5 +1,5 @@
 import { ChronosTask } from './taskParser';
-import { ChangeSet, ChangeSetOperation, DivertedDeletion, generateOperationId } from './batchApi';
+import { ChangeSet, ChangeSetOperation, DivertedDeletion, PendingRecurringCompletion, generateOperationId } from './batchApi';
 
 /**
  * A log entry for sync operations
@@ -203,6 +203,8 @@ export interface SyncedTaskInfo {
     severed?: boolean;
     /** Content hash at time of severance (to detect edits) */
     severedContentHash?: string;
+    /** Whether this event was created as recurring */
+    isRecurring?: boolean;
 }
 
 /**
@@ -672,6 +674,7 @@ export class SyncManager {
             title: task.title,
             date: task.date,
             time: task.time,
+            isRecurring: !!task.recurrenceRule,
         };
     }
 
@@ -679,6 +682,14 @@ export class SyncManager {
      * Remove a synced task record (when task is deleted/completed)
      */
     removeSync(taskId: string): void {
+        delete this.syncData.syncedTasks[taskId];
+    }
+
+    /**
+     * Remove sync info for a task (alias for removeSync)
+     * Used when releasing a recurring task from sync tracking
+     */
+    removeSyncInfo(taskId: string): void {
         delete this.syncData.syncedTasks[taskId];
     }
 
@@ -857,6 +868,7 @@ export class SyncManager {
         const operations: ChangeSetOperation[] = [];
         const needsEventData: ChangeSetOperation[] = [];
         const divertedDeletions: DivertedDeletion[] = [];
+        const pendingRecurringCompletions: PendingRecurringCompletion[] = [];
 
         // 1. CREATE operations (new tasks)
         for (const { task, targetCalendarId } of diff.toCreate) {
@@ -870,6 +882,7 @@ export class SyncManager {
                 durationMinutes: taskDuration,
                 reminderMinutes,
                 timeZone,
+                recurrenceRule: task.recurrenceRule,
             });
         }
 
@@ -887,6 +900,7 @@ export class SyncManager {
                 durationMinutes: taskDuration,
                 reminderMinutes,
                 timeZone,
+                recurrenceRule: task.recurrenceRule,
             };
             operations.push(op);
             needsEventData.push(op); // Mark for pre-fetch
@@ -917,6 +931,7 @@ export class SyncManager {
                     durationMinutes: taskDuration,
                     reminderMinutes,
                     timeZone,
+                    recurrenceRule: task.recurrenceRule,
                 });
             } else if (eventRoutingBehavior === 'freshStart') {
                 // Delete old, create new - DIVERT if safeMode
@@ -934,6 +949,7 @@ export class SyncManager {
                         durationMinutes: taskDuration,
                         reminderMinutes,
                         timeZone,
+                        recurrenceRule: task.recurrenceRule,
                     };
 
                     divertedDeletions.push({
@@ -968,35 +984,61 @@ export class SyncManager {
                         durationMinutes: taskDuration,
                         reminderMinutes,
                         timeZone,
+                        recurrenceRule: task.recurrenceRule,
                     });
                 }
             }
         }
 
         // 4. COMPLETED task operations
-        // Note: Completed task deletions are NOT diverted - user explicitly:
-        //   1. Checked the checkbox (explicit action)
-        //   2. Chose "delete" mode in settings (explicit preference)
+        // Special handling for recurring tasks:
+        // - Modifying a recurring event's title breaks the series in Google Calendar
+        // - Safety Net ON: Don't touch calendar, just release from sync tracking
+        // - Safety Net OFF: Queue for user review (modal with delete/keep options)
         for (const { task, syncInfo } of completedTasks) {
-            if (completedTaskBehavior === 'delete') {
-                operations.push({
-                    id: generateOperationId('delete'),
-                    type: 'delete',
-                    calendarId: syncInfo.calendarId,
-                    eventId: syncInfo.eventId,
-                    task,
-                });
+            // Check both current task AND stored sync info for recurrence
+            // (task might have had 🔁 removed, but event is still recurring)
+            const isRecurring = !!task.recurrenceRule || !!syncInfo.isRecurring;
+
+            if (isRecurring) {
+                // Recurring task completed - handle specially to avoid breaking series
+                if (!safeMode) {
+                    // Safety Net OFF: Queue for modal review (user decides)
+                    const taskId = this.generateTaskId(task);
+                    pendingRecurringCompletions.push({
+                        taskId,
+                        eventId: syncInfo.eventId,
+                        calendarId: syncInfo.calendarId,
+                        taskTitle: task.title,
+                        task,
+                        syncInfo,
+                    });
+                }
+                // Safety Net ON: No operation added - task will be removed from sync
+                // tracking naturally (see cleanup after this loop). Calendar event
+                // stays intact so future occurrences continue to remind user.
             } else {
-                // Mark complete - needs existing event data for the title
-                const op: ChangeSetOperation = {
-                    id: generateOperationId('complete'),
-                    type: 'complete',
-                    calendarId: syncInfo.calendarId,
-                    eventId: syncInfo.eventId,
-                    task,
-                };
-                operations.push(op);
-                needsEventData.push(op);
+                // Non-recurring task - standard behavior
+                if (completedTaskBehavior === 'delete') {
+                    operations.push({
+                        id: generateOperationId('delete'),
+                        type: 'delete',
+                        calendarId: syncInfo.calendarId,
+                        eventId: syncInfo.eventId,
+                        task,
+                    });
+                } else {
+                    // Mark complete - needs existing event data for the title
+                    const op: ChangeSetOperation = {
+                        id: generateOperationId('complete'),
+                        type: 'complete',
+                        calendarId: syncInfo.calendarId,
+                        eventId: syncInfo.eventId,
+                        task,
+                    };
+                    operations.push(op);
+                    needsEventData.push(op);
+                }
             }
         }
 
@@ -1030,7 +1072,7 @@ export class SyncManager {
             }
         }
 
-        return { operations, needsEventData, divertedDeletions };
+        return { operations, needsEventData, divertedDeletions, pendingRecurringCompletions };
     }
 
     // =====================

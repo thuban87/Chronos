@@ -123,6 +123,21 @@
     cursor: pointer;
 }
 
+.chronos-date-picker {
+    padding: 6px 10px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    background: var(--background-primary);
+    color: var(--text-normal);
+    font-size: 0.95em;
+    cursor: pointer;
+}
+
+.chronos-date-picker:focus {
+    border-color: var(--interactive-accent);
+    outline: none;
+}
+
 .chronos-button-container {
     display: flex;
     justify-content: flex-end;
@@ -549,6 +564,142 @@
 .chronos-duration-unit {
     font-size: 0.85em;
     color: var(--text-muted);
+}
+
+/* Recurrence Section in Date/Time Modal */
+.chronos-recurrence-section {
+    margin-top: 0.5em;
+    padding-top: 0.5em;
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+.chronos-recurrence-options {
+    margin-top: 0.75em;
+    padding: 0.75em;
+    background-color: var(--background-secondary);
+    border-radius: 6px;
+}
+
+.chronos-interval-input {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+    margin-bottom: 0.75em;
+}
+
+.chronos-interval-field {
+    width: 50px;
+    padding: 4px 8px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    background: var(--background-primary);
+    color: var(--text-normal);
+    font-size: 0.9em;
+    text-align: center;
+}
+
+.chronos-interval-field:focus {
+    border-color: var(--interactive-accent);
+    outline: none;
+}
+
+.chronos-interval-label {
+    color: var(--text-muted);
+}
+
+.chronos-weekday-options {
+    display: flex;
+    gap: 0.25em;
+    justify-content: center;
+}
+
+.chronos-weekday-btn {
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: 1px solid var(--background-modifier-border);
+    background: var(--background-primary);
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: 0.85em;
+    font-weight: 500;
+    transition: all 0.15s ease;
+}
+
+.chronos-weekday-btn:hover {
+    border-color: var(--interactive-accent);
+    color: var(--text-normal);
+}
+
+.chronos-weekday-btn.is-selected {
+    background: var(--interactive-accent);
+    border-color: var(--interactive-accent);
+    color: var(--text-on-accent);
+}
+
+/* Recurring Delete Modal */
+.chronos-recurring-delete-modal {
+    max-width: 450px;
+}
+
+.chronos-recurring-delete-modal .chronos-modal-desc {
+    color: var(--text-muted);
+    margin-bottom: 1.5em;
+}
+
+.chronos-recurring-options {
+    display: flex;
+    flex-direction: column;
+    gap: 1em;
+}
+
+.chronos-recurring-option {
+    padding: 1em;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    background: var(--background-secondary);
+}
+
+.chronos-recurring-option:hover {
+    border-color: var(--interactive-accent);
+}
+
+.chronos-recurring-option.chronos-option-disabled {
+    opacity: 0.5;
+}
+
+.chronos-recurring-option.chronos-option-disabled:hover {
+    border-color: var(--background-modifier-border);
+}
+
+.chronos-option-btn {
+    width: 100%;
+    padding: 8px 16px;
+    margin-bottom: 0.5em;
+    border-radius: 4px;
+    cursor: pointer;
+    font-weight: 500;
+}
+
+.chronos-option-btn.mod-warning {
+    background-color: var(--background-modifier-error);
+    color: var(--text-on-accent);
+}
+
+.chronos-option-desc {
+    font-size: 0.85em;
+    color: var(--text-muted);
+    margin: 0;
+}
+
+.chronos-cancel-container {
+    margin-top: 1.5em;
+    text-align: center;
+}
+
+.chronos-cancel-btn {
+    padding: 6px 20px;
+    cursor: pointer;
 }
 
 /* Sync Log Modal */

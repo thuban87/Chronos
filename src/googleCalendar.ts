@@ -30,6 +30,7 @@ export interface GoogleEvent {
         entryPoints?: Array<{ entryPointType: string; uri?: string; label?: string }>;
         conferenceSolution?: { name?: string };
     };
+    recurrence?: string[];
 }
 
 export interface CreateEventParams {
@@ -38,6 +39,7 @@ export interface CreateEventParams {
     durationMinutes: number;
     reminderMinutes: number[];
     timeZone: string;
+    recurrenceRule?: string | null;
 }
 
 export class GoogleCalendarApi {
@@ -435,9 +437,12 @@ export class GoogleCalendarApi {
      * Build the event body for Google Calendar API
      */
     private buildEventBody(params: CreateEventParams): object {
-        const { task, durationMinutes, reminderMinutes, timeZone } = params;
+        const { task, durationMinutes, reminderMinutes, timeZone, recurrenceRule } = params;
 
         const description = `Source: ${task.filePath}\nLine: ${task.lineNumber}\n\nSynced by Chronos for Obsidian`;
+
+        // Build base event object
+        let event: Record<string, unknown>;
 
         if (task.isAllDay) {
             // All-day event uses date (not dateTime)
@@ -445,7 +450,7 @@ export class GoogleCalendarApi {
             const endDate = new Date(task.datetime);
             endDate.setDate(endDate.getDate() + 1);
 
-            return {
+            event = {
                 summary: task.title,
                 description: description,
                 start: {
@@ -467,7 +472,7 @@ export class GoogleCalendarApi {
             const startDateTime = task.datetime;
             const endDateTime = new Date(startDateTime.getTime() + durationMinutes * 60 * 1000);
 
-            return {
+            event = {
                 summary: task.title,
                 description: description,
                 start: {
@@ -487,15 +492,22 @@ export class GoogleCalendarApi {
                 },
             };
         }
+
+        // Add recurrence if present
+        if (recurrenceRule) {
+            event.recurrence = [`RRULE:${recurrenceRule}`];
+        }
+
+        return event;
     }
 
     /**
      * Build the event body for an UPDATE, preserving user-edited fields
-     * Only updates Chronos-managed fields: summary (title), start, end, reminders
+     * Only updates Chronos-managed fields: summary (title), start, end, reminders, recurrence
      * Preserves: description (if user edited), location, attendees, colorId, etc.
      */
     private buildEventBodyForUpdate(params: CreateEventParams, existingEvent: any): object {
-        const { task, durationMinutes, reminderMinutes, timeZone } = params;
+        const { task, durationMinutes, reminderMinutes, timeZone, recurrenceRule } = params;
 
         // Check if description was user-edited (doesn't contain our signature)
         const chronosSignature = 'Synced by Chronos for Obsidian';
@@ -540,6 +552,14 @@ export class GoogleCalendarApi {
                 dateTime: this.formatDateTime(endDateTime, timeZone),
                 timeZone: timeZone,
             };
+        }
+
+        // Update recurrence - add if present, remove if not (task is no longer recurring)
+        if (recurrenceRule) {
+            updatedEvent.recurrence = [`RRULE:${recurrenceRule}`];
+        } else {
+            // Remove recurrence if task no longer has it
+            delete updatedEvent.recurrence;
         }
 
         return updatedEvent;

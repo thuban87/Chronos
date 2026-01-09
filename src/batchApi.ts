@@ -34,6 +34,8 @@ export interface ChangeSetOperation {
     timeZone?: string;
     /** Pre-fetched event data for updates (to preserve user edits) */
     existingEventData?: any;
+    /** Recurrence rule (RRULE format without prefix) */
+    recurrenceRule?: string | null;
 }
 
 /**
@@ -314,11 +316,13 @@ export class BatchCalendarApi {
         const task = op.task!;
         const description = `Source: ${task.filePath}\nLine: ${task.lineNumber}\n\nSynced by Chronos for Obsidian`;
 
+        let event: Record<string, unknown>;
+
         if (task.isAllDay) {
             const endDate = new Date(task.datetime);
             endDate.setDate(endDate.getDate() + 1);
 
-            return {
+            event = {
                 summary: task.title,
                 description,
                 start: { date: task.date },
@@ -335,7 +339,7 @@ export class BatchCalendarApi {
             const startDateTime = task.datetime;
             const endDateTime = new Date(startDateTime.getTime() + (op.durationMinutes || 30) * 60 * 1000);
 
-            return {
+            event = {
                 summary: task.title,
                 description,
                 start: {
@@ -355,6 +359,13 @@ export class BatchCalendarApi {
                 },
             };
         }
+
+        // Add recurrence if present
+        if (op.recurrenceRule) {
+            event.recurrence = [`RRULE:${op.recurrenceRule}`];
+        }
+
+        return event;
     }
 
     /**
@@ -406,6 +417,13 @@ export class BatchCalendarApi {
                 dateTime: this.formatDateTime(endDateTime),
                 timeZone: op.timeZone,
             };
+        }
+
+        // Update recurrence - add if present, remove if not
+        if (op.recurrenceRule) {
+            updatedEvent.recurrence = [`RRULE:${op.recurrenceRule}`];
+        } else {
+            delete updatedEvent.recurrence;
         }
 
         return updatedEvent;
@@ -558,6 +576,24 @@ export interface DivertedDeletion {
 }
 
 /**
+ * Information about a recurring task completion that needs user input (Safety Net OFF)
+ */
+export interface PendingRecurringCompletion {
+    /** The task ID */
+    taskId: string;
+    /** Google Calendar event ID */
+    eventId: string;
+    /** Calendar ID */
+    calendarId: string;
+    /** Task title */
+    taskTitle: string;
+    /** The full task object */
+    task: any;
+    /** Sync info for the task */
+    syncInfo: any;
+}
+
+/**
  * Builds a ChangeSet from sync diff results
  * This is the "collect" phase before batching
  */
@@ -568,6 +604,8 @@ export interface ChangeSet {
     needsEventData: ChangeSetOperation[];
     /** Deletions diverted to pending queue for user approval (Safety Net) */
     divertedDeletions: DivertedDeletion[];
+    /** Recurring task completions that need user input (Safety Net OFF only) */
+    pendingRecurringCompletions: PendingRecurringCompletion[];
 }
 
 /**
