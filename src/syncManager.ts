@@ -10,7 +10,7 @@ export interface SyncLogEntry {
     /** Batch ID to group operations from the same sync run */
     batchId: string;
     /** Type of operation */
-    type: 'create' | 'update' | 'delete' | 'complete' | 'recreate' | 'move' | 'error';
+    type: 'create' | 'update' | 'delete' | 'complete' | 'recreate' | 'move' | 'sever' | 'error';
     /** Task title or description */
     taskTitle: string;
     /** Source file path */
@@ -147,6 +147,37 @@ export interface DeletedEventRecord {
 }
 
 /**
+ * A pending severance awaiting user review (when externalEventBehavior = 'ask')
+ */
+export interface PendingSeverance {
+    /** Unique ID for this pending item */
+    id: string;
+    /** The Chronos task ID */
+    taskId: string;
+    /** Google Calendar event ID (now missing/moved) */
+    eventId: string;
+    /** Calendar where event was expected */
+    calendarId: string;
+    /** Human-readable calendar name */
+    calendarName: string;
+
+    // For display
+    /** Event title */
+    eventTitle: string;
+    /** Event date (YYYY-MM-DD) */
+    eventDate: string;
+    /** Event time (HH:mm) or undefined for all-day */
+    eventTime?: string;
+    /** Which file the task is in */
+    sourceFile: string;
+
+    /** ISO timestamp when 404 was detected */
+    detectedAt: string;
+    /** Original task line for reference */
+    originalTaskLine: string;
+}
+
+/**
  * Information about a synced task stored in plugin data
  */
 export interface SyncedTaskInfo {
@@ -168,6 +199,10 @@ export interface SyncedTaskInfo {
     date?: string;
     /** Task time (for reconciliation - distinguishes same-title tasks at different times) */
     time?: string | null;
+    /** Whether this task has been severed (won't sync unless edited) */
+    severed?: boolean;
+    /** Content hash at time of severance (to detect edits) */
+    severedContentHash?: string;
 }
 
 /**
@@ -186,6 +221,10 @@ export interface ChronosSyncData {
     pendingDeletions: PendingDeletion[];
     /** Recently deleted events for historical recovery */
     recentlyDeleted: DeletedEventRecord[];
+    /** Task IDs that have been severed (won't sync again unless edited) */
+    severedTaskIds: string[];
+    /** Pending severances awaiting user review (ask mode) */
+    pendingSeverances: PendingSeverance[];
 }
 
 /**
@@ -363,6 +402,12 @@ export class SyncManager {
             const taskId = this.generateTaskId(task);
             const contentHash = this.generateContentHash(task);
 
+            // Skip severed tasks (external event handling - user chose to stop tracking)
+            // Pass content hash to enable auto-unsever when task is edited
+            if (this.isSevered(taskId, contentHash)) {
+                continue;
+            }
+
             // Check for duplicate task IDs (same title + date + file)
             if (seenTaskIds.has(taskId)) {
                 const existingInfo = taskIdToInfo.get(taskId);
@@ -407,6 +452,8 @@ export class SyncManager {
         }
 
         // Find orphaned entries (synced tasks no longer in vault)
+        // Include severed tasks - they need to participate in reconciliation
+        // (so if the task is edited, we can detect it and unsever)
         const potentialOrphans: string[] = [];
         for (const taskId of Object.keys(this.syncData.syncedTasks)) {
             if (!seenTaskIds.has(taskId)) {
@@ -448,38 +495,52 @@ export class SyncManager {
                     const newTaskId = this.generateTaskId(newTask);
                     const newContentHash = this.generateContentHash(newTask);
 
+                    // Check if the old task was severed - if so, editing clears the severance
+                    const wasSevered = orphanInfo.severed || this.isSevered(orphanId);
+
                     // Migrate: copy sync info to new ID, delete old ID
                     // Update all stored info to match the new task
+                    // Clear severed flag - editing a task "resets" the severance
                     this.syncData.syncedTasks[newTaskId] = {
                         ...orphanInfo,
                         title: newTask.title,
                         date: newTask.date,
                         time: newTask.time,
+                        severed: false, // Clear severed on edit
                     };
                     delete this.syncData.syncedTasks[orphanId];
 
-                    // Determine what action to take based on calendar and content changes
-                    if (orphanInfo.calendarId !== targetCalendarId) {
-                        // Calendar changed - needs rerouting
-                        diff.toReroute.push({
-                            task: newTask,
-                            eventId: orphanInfo.eventId,
-                            oldCalendarId: orphanInfo.calendarId,
-                            newCalendarId: targetCalendarId
-                        });
-                    } else if (orphanInfo.contentHash !== newContentHash) {
-                        // Content changed - needs update
-                        diff.toUpdate.push({
-                            task: newTask,
-                            eventId: orphanInfo.eventId,
-                            calendarId: orphanInfo.calendarId
-                        });
+                    // Also clear from legacy severedTaskIds if it was there
+                    if (wasSevered) {
+                        this.removeSeveredTaskId(orphanId);
+                        // Severed tasks need new events (the old eventId is stale)
+                        // Clear the eventId so it's treated as new
+                        this.syncData.syncedTasks[newTaskId].eventId = '';
+                        diff.toCreate.push({ task: newTask, targetCalendarId });
                     } else {
-                        // Content hash is the same - no actual changes needed
-                        diff.unchanged.push({
-                            task: newTask,
-                            calendarId: orphanInfo.calendarId
-                        });
+                        // Determine what action to take based on calendar and content changes
+                        if (orphanInfo.calendarId !== targetCalendarId) {
+                            // Calendar changed - needs rerouting
+                            diff.toReroute.push({
+                                task: newTask,
+                                eventId: orphanInfo.eventId,
+                                oldCalendarId: orphanInfo.calendarId,
+                                newCalendarId: targetCalendarId
+                            });
+                        } else if (orphanInfo.contentHash !== newContentHash) {
+                            // Content changed - needs update
+                            diff.toUpdate.push({
+                                task: newTask,
+                                eventId: orphanInfo.eventId,
+                                calendarId: orphanInfo.calendarId
+                            });
+                        } else {
+                            // Content hash is the same - no actual changes needed
+                            diff.unchanged.push({
+                                task: newTask,
+                                calendarId: orphanInfo.calendarId
+                            });
+                        }
                     }
 
                     break; // Found match, move to next orphan
@@ -523,36 +584,49 @@ export class SyncManager {
                     const newTaskId = this.generateTaskId(newTask);
                     const newContentHash = this.generateContentHash(newTask);
 
+                    // Check if the old task was severed - if so, editing clears the severance
+                    const wasSevered = orphanInfo.severed || this.isSevered(orphanId);
+
                     // Migrate: copy sync info to new ID with updated file/line info
+                    // Clear severed flag - editing a task "resets" the severance
                     this.syncData.syncedTasks[newTaskId] = {
                         ...orphanInfo,
                         filePath: newTask.filePath,
                         lineNumber: newTask.lineNumber,
+                        severed: false, // Clear severed on edit
                     };
                     delete this.syncData.syncedTasks[orphanId];
 
-                    // Determine what action to take based on calendar and content changes
-                    if (orphanInfo.calendarId !== targetCalendarId) {
-                        // Calendar changed - needs rerouting
-                        diff.toReroute.push({
-                            task: newTask,
-                            eventId: orphanInfo.eventId,
-                            oldCalendarId: orphanInfo.calendarId,
-                            newCalendarId: targetCalendarId
-                        });
-                    } else if (orphanInfo.contentHash !== newContentHash) {
-                        // Content changed - needs update
-                        diff.toUpdate.push({
-                            task: newTask,
-                            eventId: orphanInfo.eventId,
-                            calendarId: orphanInfo.calendarId
-                        });
+                    // Also clear from legacy severedTaskIds if it was there
+                    if (wasSevered) {
+                        this.removeSeveredTaskId(orphanId);
+                        // Severed tasks need new events (the old eventId is stale)
+                        this.syncData.syncedTasks[newTaskId].eventId = '';
+                        diff.toCreate.push({ task: newTask, targetCalendarId });
                     } else {
-                        // No content changes - just moved files
-                        diff.unchanged.push({
-                            task: newTask,
-                            calendarId: orphanInfo.calendarId
-                        });
+                        // Determine what action to take based on calendar and content changes
+                        if (orphanInfo.calendarId !== targetCalendarId) {
+                            // Calendar changed - needs rerouting
+                            diff.toReroute.push({
+                                task: newTask,
+                                eventId: orphanInfo.eventId,
+                                oldCalendarId: orphanInfo.calendarId,
+                                newCalendarId: targetCalendarId
+                            });
+                        } else if (orphanInfo.contentHash !== newContentHash) {
+                            // Content changed - needs update
+                            diff.toUpdate.push({
+                                task: newTask,
+                                eventId: orphanInfo.eventId,
+                                calendarId: orphanInfo.calendarId
+                            });
+                        } else {
+                            // No content changes - just moved files
+                            diff.unchanged.push({
+                                task: newTask,
+                                calendarId: orphanInfo.calendarId
+                            });
+                        }
                     }
 
                     break; // Found match, move to next orphan
@@ -566,6 +640,14 @@ export class SyncManager {
         // Add remaining (unreconciled) orphans to the orphaned list
         for (const orphanId of potentialOrphans) {
             if (!reconciledOrphans.has(orphanId)) {
+                const syncInfo = this.syncData.syncedTasks[orphanId];
+                // Severed tasks that weren't reconciled = user deleted the task after severing
+                // Silently remove them (don't trigger deletion prompts)
+                if (syncInfo?.severed) {
+                    delete this.syncData.syncedTasks[orphanId];
+                    this.removeSeveredTaskId(orphanId);
+                    continue;
+                }
                 diff.orphaned.push(orphanId);
             }
         }
@@ -1077,5 +1159,156 @@ export class SyncManager {
      */
     generatePendingDeletionId(): string {
         return 'pd_' + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
+    }
+
+    // ========== Severed Tasks (External Event Handling) ==========
+
+    /**
+     * Add a task ID to the severed list (won't sync again unless edited)
+     */
+    addSeveredTaskId(taskId: string): void {
+        if (!this.syncData.severedTaskIds) {
+            this.syncData.severedTaskIds = [];
+        }
+        if (!this.syncData.severedTaskIds.includes(taskId)) {
+            this.syncData.severedTaskIds.push(taskId);
+        }
+    }
+
+    /**
+     * Check if a task ID has been severed
+     * Checks both the legacy severedTaskIds array and the sync record's severed flag
+     * If currentContentHash is provided, auto-unsevers if content has changed since severance
+     */
+    isSevered(taskId: string, currentContentHash?: string): boolean {
+        // Check sync record first (new method)
+        const syncInfo = this.syncData.syncedTasks[taskId];
+        if (syncInfo?.severed) {
+            // If we have a current content hash, check if it changed since severance
+            if (currentContentHash && syncInfo.severedContentHash) {
+                if (currentContentHash !== syncInfo.severedContentHash) {
+                    // Content changed! Auto-unsever this task
+                    this.clearSevered(taskId);
+                    return false;
+                }
+            }
+            return true;
+        }
+        // Fall back to legacy array check (backward compatibility)
+        // BUT: if task is in legacy array but has no sync record, it means:
+        // - The task was severed
+        // - Then edited (reconciliation migrated the sync record to a new ID)
+        // - Then edited back to original (ID matches again, but sync record is gone)
+        // In this case, allow it to sync as a NEW task
+        if (this.syncData.severedTaskIds && this.syncData.severedTaskIds.includes(taskId)) {
+            if (!syncInfo) {
+                // No sync record = task was edited away and back, clean up legacy entry
+                this.removeSeveredTaskId(taskId);
+                return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * Remove a task ID from the severed list (allow it to sync again)
+     * Clears both the sync record flag and the legacy array entry
+     */
+    removeSeveredTaskId(taskId: string): void {
+        // Clear from sync record
+        const syncInfo = this.syncData.syncedTasks[taskId];
+        if (syncInfo) {
+            syncInfo.severed = false;
+        }
+        // Clear from legacy array
+        if (this.syncData.severedTaskIds) {
+            this.syncData.severedTaskIds = this.syncData.severedTaskIds.filter(
+                id => id !== taskId
+            );
+        }
+    }
+
+    /**
+     * Mark a task as severed in its sync record (keeps the record for reconciliation)
+     * Stores the current content hash so we can detect edits later
+     */
+    markSevered(taskId: string): void {
+        const syncInfo = this.syncData.syncedTasks[taskId];
+        if (syncInfo) {
+            syncInfo.severed = true;
+            // Store content hash at time of severance for edit detection
+            syncInfo.severedContentHash = syncInfo.contentHash;
+        }
+        // Also add to legacy array for backward compatibility
+        this.addSeveredTaskId(taskId);
+    }
+
+    /**
+     * Clear severed flag from a sync record (used during reconciliation)
+     */
+    clearSevered(taskId: string): void {
+        const syncInfo = this.syncData.syncedTasks[taskId];
+        if (syncInfo) {
+            syncInfo.severed = false;
+            syncInfo.severedContentHash = undefined;
+        }
+        // Also remove from legacy array
+        this.removeSeveredTaskId(taskId);
+    }
+
+    // ========== Pending Severances (for 'ask' mode) ==========
+
+    /**
+     * Add a pending severance for user review
+     */
+    addPendingSeverance(severance: PendingSeverance): void {
+        if (!this.syncData.pendingSeverances) {
+            this.syncData.pendingSeverances = [];
+        }
+        // Check if already queued by taskId
+        const existingIndex = this.syncData.pendingSeverances.findIndex(
+            s => s.taskId === severance.taskId
+        );
+
+        if (existingIndex >= 0) {
+            // Update existing
+            this.syncData.pendingSeverances[existingIndex] = severance;
+        } else {
+            this.syncData.pendingSeverances.push(severance);
+        }
+    }
+
+    /**
+     * Get all pending severances
+     */
+    getPendingSeverances(): PendingSeverance[] {
+        return this.syncData.pendingSeverances || [];
+    }
+
+    /**
+     * Remove a pending severance by ID
+     */
+    removePendingSeverance(id: string): void {
+        if (!this.syncData.pendingSeverances) {
+            return;
+        }
+        this.syncData.pendingSeverances = this.syncData.pendingSeverances.filter(
+            s => s.id !== id
+        );
+    }
+
+    /**
+     * Clear all pending severances
+     */
+    clearPendingSeverances(): void {
+        this.syncData.pendingSeverances = [];
+    }
+
+    /**
+     * Generate a unique ID for pending severances
+     */
+    generatePendingSeveranceId(): string {
+        return 'ps_' + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
     }
 }

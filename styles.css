@@ -1673,3 +1673,161 @@
     margin-top: 0;
     color: var(--text-warning);
 }
+
+/* Phase 12: External Event Handling */
+.chronos-external-event-desc {
+    font-size: 0.9em;
+    color: var(--text-muted);
+    margin-bottom: 1em;
+}
+
+.chronos-external-event-warning {
+    background-color: var(--background-secondary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    padding: 1em;
+    margin: 1em 0 1.5em 0;
+    font-size: 0.9em;
+}
+
+.chronos-external-event-warning p {
+    margin: 0 0 0.5em 0;
+}
+
+.chronos-external-event-warning ul {
+    margin: 0.5em 0;
+    padding-left: 1.5em;
+}
+
+.chronos-external-event-warning li {
+    margin-bottom: 0.5em;
+}
+
+.chronos-recovery-note {
+    margin-top: 1em !important;
+    padding-top: 0.75em;
+    border-top: 1px solid var(--background-modifier-border);
+    color: var(--text-muted);
+    font-style: italic;
+}
+
+/* Phase 12: Severance Review Modal (External Event Handling) */
+.modal:has(.chronos-severance-review-modal) {
+    width: 600px;
+    max-width: 90vw;
+}
+
+.chronos-severance-review-modal {
+    width: 100%;
+}
+
+.chronos-severance-header {
+    margin-bottom: 0.5em;
+}
+
+.chronos-severance-header h2 {
+    margin: 0;
+}
+
+.chronos-severance-empty {
+    text-align: center;
+    color: var(--text-muted);
+    padding: 2em;
+}
+
+.chronos-severance-explanation {
+    margin-bottom: 1em;
+}
+
+.chronos-severance-explanation p {
+    margin: 0;
+    color: var(--text-muted);
+    font-size: 0.95em;
+    line-height: 1.5;
+}
+
+.chronos-severance-batch-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.75em;
+    margin-bottom: 1em;
+    padding-bottom: 1em;
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.chronos-severance-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75em;
+    max-height: 50vh;
+    overflow-y: auto;
+}
+
+.chronos-severance-item {
+    background-color: var(--background-secondary);
+    border-radius: 6px;
+    border-left: 3px solid var(--text-warning);
+    padding: 0.75em;
+}
+
+.chronos-severance-details {
+    margin-bottom: 0.75em;
+}
+
+.chronos-severance-title {
+    font-weight: 600;
+    font-size: 1em;
+    margin-bottom: 0.5em;
+    color: var(--text-normal);
+}
+
+.chronos-severance-datetime {
+    font-size: 0.9em;
+    color: var(--text-muted);
+    margin-bottom: 0.25em;
+}
+
+.chronos-severance-calendar {
+    font-size: 0.9em;
+    color: var(--text-muted);
+    margin-bottom: 0.25em;
+}
+
+.chronos-severance-source {
+    font-size: 0.85em;
+    color: var(--text-faint);
+    font-family: var(--font-monospace);
+}
+
+.chronos-severance-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5em;
+    margin-top: 0.75em;
+    padding-top: 0.75em;
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+.chronos-severance-recovery-note {
+    margin-top: 1em;
+    padding: 0.75em 1em;
+    background-color: var(--background-secondary);
+    border-radius: 6px;
+    border-left: 3px solid var(--text-accent);
+}
+
+.chronos-severance-recovery-note p {
+    margin: 0;
+    font-size: 0.9em;
+    color: var(--text-muted);
+}
+
+/* Pending Severances Status Bar */
+.chronos-pending-severances-status {
+    cursor: pointer;
+    color: var(--text-warning);
+}
+
+.chronos-pending-severances-status:hover {
+    color: var(--text-accent);
+}
