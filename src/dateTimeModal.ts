@@ -7,6 +7,9 @@ export interface DateTimeResult {
     customReminders: boolean;
     reminder1: number | null;  // minutes before event
     reminder2: number | null;  // minutes before event
+    customDuration: boolean;
+    durationHours: number | null;
+    durationMinutes: number | null;
 }
 
 export class DateTimeModal extends Modal {
@@ -25,7 +28,10 @@ export class DateTimeModal extends Modal {
             noSync: false,
             customReminders: false,
             reminder1: null,
-            reminder2: null
+            reminder2: null,
+            customDuration: false,
+            durationHours: null,
+            durationMinutes: null
         };
     }
 
@@ -148,6 +154,65 @@ export class DateTimeModal extends Modal {
             this.result.reminder2 = isNaN(val) || val <= 0 ? null : val;
         });
         reminder2Div.createEl('span', { text: 'min', cls: 'chronos-reminder-unit' });
+
+        // Custom duration section
+        const durationContainer = contentEl.createDiv({ cls: 'chronos-duration-section' });
+
+        new Setting(durationContainer)
+            .setName('Custom duration')
+            .setDesc('Override default event duration')
+            .addToggle(toggle => toggle
+                .setValue(this.result.customDuration)
+                .onChange(value => {
+                    this.result.customDuration = value;
+                    // Show/hide the duration inputs
+                    durationInputs.style.display = value ? 'flex' : 'none';
+                    if (!value) {
+                        this.result.durationHours = null;
+                        this.result.durationMinutes = null;
+                    }
+                }));
+
+        const durationInputs = durationContainer.createDiv({ cls: 'chronos-duration-inputs' });
+        durationInputs.style.display = this.result.customDuration ? 'flex' : 'none';
+
+        // Duration hours
+        const hoursDiv = durationInputs.createDiv({ cls: 'chronos-duration-input' });
+        hoursDiv.createEl('label', { text: 'Hours:' });
+        const hoursInput = hoursDiv.createEl('input', {
+            type: 'number',
+            placeholder: '0',
+            cls: 'chronos-duration-field'
+        });
+        hoursInput.min = '0';
+        hoursInput.max = '24';
+        if (this.result.durationHours) {
+            hoursInput.value = String(this.result.durationHours);
+        }
+        hoursInput.addEventListener('input', () => {
+            const val = parseInt(hoursInput.value, 10);
+            this.result.durationHours = isNaN(val) || val < 0 ? null : val;
+        });
+        hoursDiv.createEl('span', { text: 'h', cls: 'chronos-duration-unit' });
+
+        // Duration minutes
+        const minutesDiv = durationInputs.createDiv({ cls: 'chronos-duration-input' });
+        minutesDiv.createEl('label', { text: 'Minutes:' });
+        const minutesInput = minutesDiv.createEl('input', {
+            type: 'number',
+            placeholder: '30',
+            cls: 'chronos-duration-field'
+        });
+        minutesInput.min = '0';
+        minutesInput.max = '59';
+        if (this.result.durationMinutes) {
+            minutesInput.value = String(this.result.durationMinutes);
+        }
+        minutesInput.addEventListener('input', () => {
+            const val = parseInt(minutesInput.value, 10);
+            this.result.durationMinutes = isNaN(val) || val < 0 ? null : val;
+        });
+        minutesDiv.createEl('span', { text: 'm', cls: 'chronos-duration-unit' });
 
         // Buttons
         const buttonContainer = contentEl.createDiv({ cls: 'chronos-button-container' });

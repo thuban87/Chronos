@@ -129,6 +129,19 @@ export default class ChronosPlugin extends Plugin {
 						if (result.reminder2) reminders.push(result.reminder2);
 						text += ` 🔔 ${reminders.join(',')}`;
 					}
+					if (result.customDuration && (result.durationHours || result.durationMinutes)) {
+						let durationText = '⏱️ ';
+						if (result.durationHours && result.durationHours > 0) {
+							durationText += `${result.durationHours}h`;
+						}
+						if (result.durationMinutes && result.durationMinutes > 0) {
+							durationText += `${result.durationMinutes}m`;
+						}
+						// Only add if we have at least some duration
+						if (durationText !== '⏱️ ') {
+							text += ` ${durationText}`;
+						}
+					}
 					if (result.noSync) {
 						text += ' 🚫';
 					}

@@ -861,12 +861,13 @@ export class SyncManager {
         // 1. CREATE operations (new tasks)
         for (const { task, targetCalendarId } of diff.toCreate) {
             const reminderMinutes = task.reminderMinutes || defaultReminderMinutes;
+            const taskDuration = task.durationMinutes || defaultDurationMinutes;
             operations.push({
                 id: generateOperationId('create'),
                 type: 'create',
                 calendarId: targetCalendarId,
                 task,
-                durationMinutes: defaultDurationMinutes,
+                durationMinutes: taskDuration,
                 reminderMinutes,
                 timeZone,
             });
@@ -876,13 +877,14 @@ export class SyncManager {
         // These need existing event data to preserve user edits
         for (const { task, eventId, calendarId } of diff.toUpdate) {
             const reminderMinutes = task.reminderMinutes || defaultReminderMinutes;
+            const taskDuration = task.durationMinutes || defaultDurationMinutes;
             const op: ChangeSetOperation = {
                 id: generateOperationId('update'),
                 type: 'update',
                 calendarId,
                 eventId,
                 task,
-                durationMinutes: defaultDurationMinutes,
+                durationMinutes: taskDuration,
                 reminderMinutes,
                 timeZone,
             };
@@ -906,12 +908,13 @@ export class SyncManager {
                 });
             } else if (eventRoutingBehavior === 'keepBoth') {
                 // Create new event (old one stays dormant) - no deletion, no diversion needed
+                const taskDuration = task.durationMinutes || defaultDurationMinutes;
                 operations.push({
                     id: generateOperationId('create'),
                     type: 'create',
                     calendarId: newCalendarId,
                     task,
-                    durationMinutes: defaultDurationMinutes,
+                    durationMinutes: taskDuration,
                     reminderMinutes,
                     timeZone,
                 });
@@ -919,6 +922,7 @@ export class SyncManager {
                 // Delete old, create new - DIVERT if safeMode
                 const taskId = this.generateTaskId(task);
                 const syncInfo = this.getSyncInfo(taskId);
+                const taskDuration = task.durationMinutes || defaultDurationMinutes;
 
                 if (safeMode && syncInfo) {
                     // Divert the deletion for user approval
@@ -927,7 +931,7 @@ export class SyncManager {
                         type: 'create',
                         calendarId: newCalendarId,
                         task,
-                        durationMinutes: defaultDurationMinutes,
+                        durationMinutes: taskDuration,
                         reminderMinutes,
                         timeZone,
                     };
@@ -961,7 +965,7 @@ export class SyncManager {
                         type: 'create',
                         calendarId: newCalendarId,
                         task,
-                        durationMinutes: defaultDurationMinutes,
+                        durationMinutes: taskDuration,
                         reminderMinutes,
                         timeZone,
                     });

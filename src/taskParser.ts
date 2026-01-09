@@ -28,6 +28,8 @@ export interface ChronosTask {
     tags: string[];
     /** Custom reminder times in minutes (null = use defaults) */
     reminderMinutes: number[] | null;
+    /** Custom duration in minutes (null = use default) */
+    durationMinutes: number | null;
 }
 
 /**
@@ -42,6 +44,7 @@ interface ParseResult {
     title: string;
     tags: string[];
     reminderMinutes: number[] | null;
+    durationMinutes: number | null;
 }
 
 // Regex patterns for Tasks plugin format + Chronos additions
@@ -53,6 +56,8 @@ const COMPLETION_PATTERN = /✅\s*\d{4}-\d{2}-\d{2}/;
 const TAG_PATTERN = /#[\w-]+/g;
 // Reminder pattern: 🔔 followed by comma-separated numbers (e.g., 🔔 30,10 or 🔔 15)
 const REMINDER_PATTERN = /🔔\s*([\d,\s]+)/;
+// Duration pattern: ⏱️ followed by hours/minutes (e.g., ⏱️ 2h, ⏱️ 30m, ⏱️ 1h30m, ⏱️ 90)
+const DURATION_PATTERN = /⏱️\s*(?:(\d+)h)?(?:(\d+)m?)?/;
 
 // Patterns to strip from title
 const STRIP_PATTERNS = [
@@ -66,6 +71,7 @@ const STRIP_PATTERNS = [
     /🛫\s*\d{4}-\d{2}-\d{2}/g,       // Start date
     /⏳\s*\d{4}-\d{2}-\d{2}/g,       // Scheduled date
     /🔔\s*[\d,\s]+/g,                // Custom reminder times
+    /⏱️\s*(?:\d+h)?(?:\d+m?)?/g,     // Custom duration
     /#[\w-]+/g,                       // Tags (e.g., #work, #personal)
 ];
 
@@ -89,6 +95,7 @@ export class TaskParser {
             title: '',
             tags: [],
             reminderMinutes: null,
+            durationMinutes: null,
         };
 
         // Check if it's a task (checkbox)
@@ -126,6 +133,17 @@ export class TaskParser {
                 .filter(n => !isNaN(n) && n > 0);
             if (reminders.length > 0) {
                 result.reminderMinutes = reminders;
+            }
+        }
+
+        // Extract custom duration (e.g., ⏱️ 2h or ⏱️ 30m or ⏱️ 1h30m or ⏱️ 90)
+        const durationMatch = line.match(DURATION_PATTERN);
+        if (durationMatch) {
+            const hours = durationMatch[1] ? parseInt(durationMatch[1], 10) : 0;
+            const minutes = durationMatch[2] ? parseInt(durationMatch[2], 10) : 0;
+            const totalMinutes = (hours * 60) + minutes;
+            if (totalMinutes > 0) {
+                result.durationMinutes = totalMinutes;
             }
         }
 
@@ -248,6 +266,7 @@ export class TaskParser {
                         isCompleted: parsed.isCompleted,
                         tags: parsed.tags,
                         reminderMinutes: parsed.reminderMinutes,
+                        durationMinutes: parsed.durationMinutes,
                     });
                 }
             }
