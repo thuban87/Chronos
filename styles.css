@@ -504,6 +504,53 @@
     color: var(--text-muted);
 }
 
+/* Custom Duration in Date/Time Modal */
+.chronos-duration-section {
+    margin-top: 0.5em;
+    padding-top: 0.5em;
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+.chronos-duration-inputs {
+    display: flex;
+    gap: 1.5em;
+    margin-top: 0.75em;
+    padding: 0.75em;
+    background-color: var(--background-secondary);
+    border-radius: 6px;
+}
+
+.chronos-duration-input {
+    display: flex;
+    align-items: center;
+    gap: 0.5em;
+}
+
+.chronos-duration-input label {
+    font-size: 0.9em;
+    color: var(--text-muted);
+}
+
+.chronos-duration-field {
+    width: 60px;
+    padding: 4px 8px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    background: var(--background-primary);
+    color: var(--text-normal);
+    font-size: 0.9em;
+}
+
+.chronos-duration-field:focus {
+    border-color: var(--interactive-accent);
+    outline: none;
+}
+
+.chronos-duration-unit {
+    font-size: 0.85em;
+    color: var(--text-muted);
+}
+
 /* Sync Log Modal */
 .chronos-sync-log-modal {
     max-height: 70vh;
