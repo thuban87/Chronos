@@ -121,6 +121,7 @@ Access via Command Palette (`Ctrl/Cmd + P`):
 | Chronos: Scan vault for sync-eligible tasks | View all tasks that will be synced |
 | Chronos: Insert date/time for task | Open modal to insert date/time markers |
 | Chronos: Review pending deletions | Review and approve/reject pending event deletions |
+| Chronos: Review disconnected events | Review events moved/deleted in Google Calendar |
 | Chronos: View sync history | View sync log and recently deleted events |
 
 ## Status Bar
@@ -151,9 +152,10 @@ The status bar shows:
 ### Deleting Tasks
 - If you delete a task line from your notes, the corresponding calendar event is deleted
 
-### Externally Deleted Events
-- If you delete an event directly in Google Calendar, Chronos will recreate it on next sync
-- This ensures your tasks always have reminders
+### Externally Moved/Deleted Events
+- If you move or delete an event in Google Calendar, behavior depends on your External Event Handling setting
+- Default: You'll be asked what to do (sever or recreate)
+- See the [External Event Handling](#external-event-handling) section for details
 
 ## Safety Net
 
@@ -190,6 +192,40 @@ View Sync History to see recently deleted events (last 30 days). You can restore
 > **Note**: Restored events are new - they won't have the same ID, and attendees would need to be re-invited.
 
 For detailed documentation, see [docs/SAFETY-NET.md](docs/SAFETY-NET.md).
+
+## External Event Handling
+
+When you move or delete an event directly in Google Calendar, Chronos needs to know what to do the next time it syncs. By default, it would recreate the event - but what if you moved it intentionally?
+
+### Settings
+
+In **Settings → Chronos → External Event Handling**, choose how Chronos handles events it can't find:
+
+| Option | Behavior |
+|--------|----------|
+| **Ask me each time** (default) | Queue for review, you decide per-event |
+| **Sever link** | Stop tracking the task, don't recreate |
+| **Recreate event** | Assume deletion was accidental, recreate |
+
+### How It Works
+
+1. Chronos syncs and can't find an expected event (404)
+2. Based on your setting:
+   - **Ask**: Event is queued for review, status bar shows count
+   - **Sever**: Task is "severed" - won't sync again unless you edit it
+   - **Recreate**: Event is recreated on the original calendar
+
+### Review Modal
+
+When using "Ask me each time", click the status bar indicator to review disconnected events:
+
+- **Sever Link**: Stop tracking this task (it won't sync unless edited)
+- **Recreate Event**: Create a new event on the original calendar
+- **Sever All / Recreate All**: Batch operations
+
+### Recovery
+
+Severed tasks can sync again if you edit the task's title, date, or time in your notes. This creates a new event - it won't reconnect to the moved one.
 
 ## Offline Handling
 

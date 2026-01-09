@@ -1,9 +1,73 @@
 # Chronos Handoff Log
 
-**Last Updated:** January 8, 2026
-**Current Phase:** Phase 11 Complete - Safety Net
-**Current Branch:** feature/phase-11.1-deletion-security
+**Last Updated:** January 9, 2026
+**Current Phase:** Phase 12 Complete - External Event Handling
+**Current Branch:** feature/phase-12-external-event-handling
 **Version:** 0.1.0
+
+---
+
+## Session: January 9, 2026 - Phase 12 COMPLETE: External Event Handling
+
+### Feature Overview
+
+External Event Handling determines what Chronos does when it detects a 404 for a calendar event (meaning the event was moved or deleted in Google Calendar). Users can choose to be asked each time, automatically sever the link, or automatically recreate events.
+
+### What Was Built
+
+| Component | Description |
+|-----------|-------------|
+| **External Event Behavior Setting** | Dropdown with 3 options: Ask me each time, Sever link, Recreate event |
+| **Pending Severances Queue** | Events awaiting user review (when in 'ask' mode) |
+| **Status Bar Indicator** | Shows pending severance count, click to review |
+| **SeveranceReviewModal** | Review each disconnected event with Sever/Recreate buttons |
+| **Strict Time Sync Setting** | Detects when Google event time differs from Obsidian task |
+| **Sever Operation Logging** | Severances appear in sync history with 🔗 icon |
+| **Reconciliation-Safe Severing** | Severed tasks keep sync records for edit detection |
+| **Auto-Unsever on Edit** | Editing a severed task clears the severance and creates new event |
+
+### Implementation Phases
+
+| Phase | Focus | Status |
+|-------|-------|--------|
+| Phase 1 | Data structures, settings, helper methods | ✓ Complete |
+| Phase 2 | Settings UI with dropdown and descriptions | ✓ Complete |
+| Phase 3 | Sync logic integration for 404 handling | ✓ Complete |
+| Phase 4 | Status bar indicator for pending severances | ✓ Complete |
+| Phase 5 | Review modal with per-item actions | ✓ Complete |
+| Phase 6 | Modal action callbacks (sever/recreate) | ✓ Complete |
+| Phase 7 | Polish, CSS, sync logging, documentation | ✓ Complete |
+
+### Files Created
+
+| File | Purpose |
+|------|---------|
+| `src/severanceReviewModal.ts` | Modal for reviewing disconnected events |
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `main.ts` | Settings, status bar, modal integration, callbacks, logging |
+| `src/syncManager.ts` | PendingSeverance interface, severed task tracking, reconciliation |
+| `styles.css` | SeveranceReviewModal styling |
+| `README.md` | External Event Handling documentation |
+| `docs/SAFETY-NET.md` | Added External Event Handling section |
+
+### Key Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Default behavior | Ask me each time | Consistent with Safety Net philosophy |
+| Severed task storage | Keep sync record with flag | Enables reconciliation on edit |
+| Recovery path | Edit title/date/time | Changes task ID, syncs fresh |
+| Orphan handling | Severed tasks silently removed | No deletion prompts for severed tasks |
+
+### Known Issues
+
+| Issue | Status | Description |
+|-------|--------|-------------|
+| Edit-back edge case | Open | When severed task is edited to new time, then back to original, task remains severed. Workaround: edit to different time. |
 
 ---
 
@@ -374,7 +438,7 @@ Chronos - Ready for Testing / Next Feature
 **Directory:** C:\Users\bwales\projects\obsidian-plugins\Chronos
 **Deploy to:** G:\My Drive\IT\Obsidian Vault\My Notebooks\.obsidian\plugins\chronos\
 **GitHub:** https://github.com/thuban87/Chronos (public)
-**Current branch:** feature/phase-10-batch-api (merge to main when ready)
+**Current branch:** feature/phase-12-external-event-handling (merge to main when ready)
 **Version:** 0.1.0
 
 **IMPORTANT: Read docs\Handoff Log.md and docs\ADR Priority List - Chronos.md first**
@@ -383,8 +447,10 @@ Chronos - Ready for Testing / Next Feature
 
 ## Context
 
-Phase 10 (Batch API Calls) is COMPLETE. The plugin now syncs dramatically faster:
-- 100 events: 30-50 seconds → 2-5 seconds
+Phase 12 (External Event Handling) is COMPLETE. The plugin now handles moved/deleted events:
+- Users choose: Ask each time, Sever link, or Recreate event
+- Review modal for pending severances
+- Severed tasks can sync again if edited
 
 The plugin is feature-complete for MVP+ and ready for:
 1. Extended testing with your real vault
@@ -405,12 +471,20 @@ The plugin is feature-complete for MVP+ and ready for:
 - Sync history with batched logs
 - Batch API for fast syncing
 - Smart retry on server errors
+- Safety Net deletion protection
+- External Event Handling (moved/deleted events in Google Calendar)
+
+---
+
+## Known Issue
+
+**Edit-back edge case:** When a severed task is edited to a new time, then edited back to original, task remains severed. Workaround: edit to a different time than the original.
 
 ---
 
 ## Suggested Next Steps
 
-1. **Test the batch sync** - Try syncing many tasks at once
+1. **Test external event handling** - Move an event in Google Calendar, run sync
 2. **Consider BRAT release** - Plugin is ready for beta testers
 3. **Maybe Someday features** - Two-way sync, recurring events, event colors
 

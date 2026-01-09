@@ -3,7 +3,7 @@ import { GoogleAuth, TokenData, GoogleAuthCredentials } from './src/googleAuth';
 import { TaskParser, ChronosTask } from './src/taskParser';
 import { DateTimeModal } from './src/dateTimeModal';
 import { GoogleCalendarApi, GoogleCalendar, GoogleEvent } from './src/googleCalendar';
-import { SyncManager, ChronosSyncData, PendingOperation, SyncLogEntry, MultiCalendarSyncDiff, SyncedTaskInfo, PendingDeletion, DeletedEventRecord } from './src/syncManager';
+import { SyncManager, ChronosSyncData, PendingOperation, SyncLogEntry, MultiCalendarSyncDiff, SyncedTaskInfo, PendingDeletion, DeletedEventRecord, PendingSeverance } from './src/syncManager';
 import { AgendaView, AGENDA_VIEW_TYPE, AgendaViewDeps } from './src/agendaView';
 import { BatchCalendarApi, ChangeSetOperation, BatchResult, DivertedDeletion } from './src/batchApi';
 import { DeletionReviewModal } from './src/deletionReviewModal';
@@ -11,6 +11,7 @@ import { TaskRestoreModal } from './src/taskRestoreModal';
 import { FreshStartWarningModal } from './src/freshStartWarningModal';
 import { PowerUserWarningModal } from './src/powerUserWarningModal';
 import { EventRestoreModal } from './src/eventRestoreModal';
+import { SeveranceReviewModal } from './src/severanceReviewModal';
 
 interface ChronosSettings {
 	googleClientId: string;
@@ -25,6 +26,8 @@ interface ChronosSettings {
 	tagCalendarMappings: Record<string, string>;  // tag → calendarId
 	eventRoutingBehavior: 'preserve' | 'keepBoth' | 'freshStart';
 	safeMode: boolean;  // Safety Net: require approval for deletions
+	externalEventBehavior: 'ask' | 'sever' | 'recreate';  // What to do when events are moved/deleted in Google Calendar
+	strictTimeSync: boolean;  // Detect when Google event time differs from Obsidian task time
 }
 
 interface ChronosData {
@@ -45,7 +48,9 @@ const DEFAULT_SETTINGS: ChronosSettings = {
 	agendaRefreshIntervalMinutes: 10,
 	tagCalendarMappings: {},
 	eventRoutingBehavior: 'preserve',
-	safeMode: true  // Safety Net enabled by default
+	safeMode: true,  // Safety Net enabled by default
+	externalEventBehavior: 'ask',  // Default: ask user what to do with moved/deleted events
+	strictTimeSync: false  // Default: don't check for time drift
 };
 
 export default class ChronosPlugin extends Plugin {
@@ -59,6 +64,7 @@ export default class ChronosPlugin extends Plugin {
 	private syncIntervalId: number | null = null;
 	private statusBarItem: HTMLElement | null = null;
 	private pendingDeletionsStatusBarItem: HTMLElement | null = null;
+	private pendingSeverancesStatusBarItem: HTMLElement | null = null;
 	pendingRerouteFailures: { task: ChronosTask; oldCalendarId: string; newCalendarId: string; error: string }[] = [];
 	private calendarNameCache: Map<string, string> = new Map();
 
@@ -167,6 +173,15 @@ export default class ChronosPlugin extends Plugin {
 			}
 		});
 
+		// Add command to review disconnected events (External Event Handling)
+		this.addCommand({
+			id: 'review-disconnected-events',
+			name: 'Review disconnected events',
+			callback: () => {
+				this.openSeveranceReviewModal();
+			}
+		});
+
 		// Add status bar item
 		this.statusBarItem = this.addStatusBarItem();
 		this.statusBarItem.addClass('chronos-status-bar');
@@ -179,6 +194,13 @@ export default class ChronosPlugin extends Plugin {
 		this.pendingDeletionsStatusBarItem.addClass('chronos-pending-deletions-status');
 		this.pendingDeletionsStatusBarItem.onClickEvent(() => {
 			this.openDeletionReviewModal();
+		});
+
+		// Add pending severances status bar item (External Event Handling)
+		this.pendingSeverancesStatusBarItem = this.addStatusBarItem();
+		this.pendingSeverancesStatusBarItem.addClass('chronos-pending-severances-status');
+		this.pendingSeverancesStatusBarItem.onClickEvent(() => {
+			this.openSeveranceReviewModal();
 		});
 
 		this.updateStatusBar();
@@ -196,6 +218,7 @@ export default class ChronosPlugin extends Plugin {
 			this.statusBarItem.setText('📅 Chronos: Not connected');
 			this.statusBarItem.setAttr('aria-label', 'Click to open settings and connect');
 			this.updatePendingDeletionsStatusBar();
+			this.updatePendingSeverancesStatusBar();
 			return;
 		}
 
@@ -206,6 +229,7 @@ export default class ChronosPlugin extends Plugin {
 			this.statusBarItem.setText(`📅 Chronos: ${syncedCount} tasks (never synced)`);
 			this.statusBarItem.setAttr('aria-label', 'Click to sync now');
 			this.updatePendingDeletionsStatusBar();
+			this.updatePendingSeverancesStatusBar();
 			return;
 		}
 
@@ -235,6 +259,7 @@ export default class ChronosPlugin extends Plugin {
 		this.statusBarItem.setAttr('aria-label', `Chronos: Last sync ${timeAgo}, ${nextSyncText}. Click to sync now.`);
 
 		this.updatePendingDeletionsStatusBar();
+		this.updatePendingSeverancesStatusBar();
 	}
 
 	/**
@@ -258,6 +283,219 @@ export default class ChronosPlugin extends Plugin {
 				`${pendingDeletionCount} deletion${pendingDeletionCount === 1 ? '' : 's'} awaiting review. Click to review.`
 			);
 		}
+	}
+
+	/**
+	 * Update the pending severances status bar indicator (External Event Handling)
+	 * Only visible when there are pending severances awaiting review
+	 */
+	updatePendingSeverancesStatusBar(): void {
+		if (!this.pendingSeverancesStatusBarItem) return;
+
+		const pendingSeverances = this.syncManager.getPendingSeverances();
+		const count = pendingSeverances.length;
+
+		if (count === 0) {
+			// Hide the status bar item when no pending severances
+			this.pendingSeverancesStatusBarItem.style.display = 'none';
+		} else {
+			// Show the status bar item with indicator
+			this.pendingSeverancesStatusBarItem.style.display = '';
+			this.pendingSeverancesStatusBarItem.setText(`🔗 ${count} disconnected`);
+			this.pendingSeverancesStatusBarItem.setAttr(
+				'aria-label',
+				`${count} event${count === 1 ? '' : 's'} disconnected. Click to review.`
+			);
+		}
+	}
+
+	/**
+	 * Open the severance review modal (External Event Handling)
+	 */
+	openSeveranceReviewModal(): void {
+		const pendingSeverances = this.syncManager.getPendingSeverances();
+		if (pendingSeverances.length === 0) {
+			new Notice('No disconnected events to review');
+			return;
+		}
+
+		const modal = new SeveranceReviewModal(this.app, pendingSeverances, {
+			onSever: async (severance: PendingSeverance) => {
+				// Mark as severed (keeps sync record for reconciliation, won't sync unless edited)
+				this.syncManager.markSevered(severance.taskId);
+				// Remove from pending queue
+				this.syncManager.removePendingSeverance(severance.id);
+
+				// Log the sever operation
+				this.syncManager.logOperation({
+					type: 'sever',
+					taskTitle: severance.eventTitle,
+					filePath: severance.sourceFile,
+					success: true,
+					batchId: this.syncManager.generateBatchId(),
+				});
+
+				await this.saveSettings();
+				this.updateStatusBar();
+				new Notice(`Severed "${severance.eventTitle}" - it won't sync to Google Calendar unless you edit the task`);
+
+				// Refresh modal
+				const updated = this.syncManager.getPendingSeverances();
+				if (updated.length === 0) {
+					modal.close();
+				} else {
+					modal.refresh(updated);
+				}
+			},
+			onRecreate: async (severance: PendingSeverance) => {
+				try {
+					// Recreate the event in Google Calendar
+					const timeZone = this.settings.timeZone === 'local'
+						? Intl.DateTimeFormat().resolvedOptions().timeZone
+						: this.settings.timeZone;
+
+					const isAllDay = !severance.eventTime;
+
+					// Build pseudo task for the createEvent API
+					// Parse datetime from date and time
+					let datetime: Date;
+					if (isAllDay) {
+						datetime = new Date(severance.eventDate + 'T00:00:00');
+					} else {
+						datetime = new Date(`${severance.eventDate}T${severance.eventTime}:00`);
+					}
+
+					const pseudoTask: ChronosTask = {
+						title: severance.eventTitle,
+						date: severance.eventDate,
+						time: severance.eventTime || null,
+						datetime: datetime,
+						filePath: severance.sourceFile,
+						fileName: severance.sourceFile.split('/').pop() || severance.sourceFile,
+						lineNumber: 0, // Unknown, but not critical
+						rawText: severance.originalTaskLine,
+						isCompleted: false,
+						isAllDay: isAllDay,
+						tags: [],
+						reminderMinutes: null
+					};
+
+					const createdEvent = await this.calendarApi.createEvent({
+						task: pseudoTask,
+						calendarId: severance.calendarId,
+						durationMinutes: this.settings.defaultEventDurationMinutes,
+						reminderMinutes: this.settings.defaultReminderMinutes,
+						timeZone,
+					});
+
+					this.syncManager.recordSync(pseudoTask, createdEvent.id, severance.calendarId);
+					// Clear any severed status (the new sync record won't have it, but clear from legacy array too)
+					this.syncManager.clearSevered(severance.taskId);
+
+					// Remove from pending queue
+					this.syncManager.removePendingSeverance(severance.id);
+
+					await this.saveSettings();
+					this.updateStatusBar();
+					new Notice(`Recreated "${severance.eventTitle}" on calendar`);
+
+					// Refresh modal
+					const updated = this.syncManager.getPendingSeverances();
+					if (updated.length === 0) {
+						modal.close();
+					} else {
+						modal.refresh(updated);
+					}
+				} catch (error: any) {
+					console.error('Failed to recreate event:', error);
+					new Notice(`Failed to recreate event: ${error.message}`);
+				}
+			},
+			onSeverAll: async () => {
+				const severances = this.syncManager.getPendingSeverances();
+				const batchId = this.syncManager.generateBatchId();
+				for (const severance of severances) {
+					this.syncManager.markSevered(severance.taskId);
+					this.syncManager.removePendingSeverance(severance.id);
+
+					// Log each sever operation
+					this.syncManager.logOperation({
+						type: 'sever',
+						taskTitle: severance.eventTitle,
+						filePath: severance.sourceFile,
+						success: true,
+						batchId,
+					});
+				}
+				await this.saveSettings();
+				this.updateStatusBar();
+				new Notice(`Severed ${severances.length} event(s) - they won't sync to Google Calendar unless edited`);
+			},
+			onRecreateAll: async () => {
+				const severances = this.syncManager.getPendingSeverances();
+				const timeZone = this.settings.timeZone === 'local'
+					? Intl.DateTimeFormat().resolvedOptions().timeZone
+					: this.settings.timeZone;
+
+				let created = 0;
+				let failed = 0;
+
+				for (const severance of severances) {
+					try {
+						const isAllDay = !severance.eventTime;
+
+						// Parse datetime from date and time
+						let datetime: Date;
+						if (isAllDay) {
+							datetime = new Date(severance.eventDate + 'T00:00:00');
+						} else {
+							datetime = new Date(`${severance.eventDate}T${severance.eventTime}:00`);
+						}
+
+						const pseudoTask: ChronosTask = {
+							title: severance.eventTitle,
+							date: severance.eventDate,
+							time: severance.eventTime || null,
+							datetime: datetime,
+							filePath: severance.sourceFile,
+							fileName: severance.sourceFile.split('/').pop() || severance.sourceFile,
+							lineNumber: 0,
+							rawText: severance.originalTaskLine,
+							isCompleted: false,
+							isAllDay: isAllDay,
+							tags: [],
+							reminderMinutes: null
+						};
+
+						const createdEvent = await this.calendarApi.createEvent({
+							task: pseudoTask,
+							calendarId: severance.calendarId,
+							durationMinutes: this.settings.defaultEventDurationMinutes,
+							reminderMinutes: this.settings.defaultReminderMinutes,
+							timeZone,
+						});
+
+						this.syncManager.recordSync(pseudoTask, createdEvent.id, severance.calendarId);
+						this.syncManager.clearSevered(severance.taskId);
+						this.syncManager.removePendingSeverance(severance.id);
+						created++;
+					} catch (error: any) {
+						console.error(`Failed to recreate event "${severance.eventTitle}":`, error);
+						failed++;
+					}
+				}
+
+				await this.saveSettings();
+				this.updateStatusBar();
+
+				if (failed > 0) {
+					new Notice(`Recreated ${created} event(s), ${failed} failed`);
+				} else {
+					new Notice(`Recreated ${created} event(s) on calendar`);
+				}
+			}
+		});
+		modal.open();
 	}
 
 	/**
@@ -1011,24 +1249,162 @@ export default class ChronosPlugin extends Plugin {
 
 						// Event doesn't exist or is cancelled
 						if (!result.success || result.body?.status === 'cancelled') {
-							// Queue for recreation
-							const reminderMinutes = op.task.reminderMinutes || this.settings.defaultReminderMinutes;
-							toRecreate.push({
-								id: `recreate_${taskId}`,
-								type: 'create',
-								calendarId: op.calendarId,
-								task: op.task,
-								durationMinutes: this.settings.defaultEventDurationMinutes,
-								reminderMinutes,
-								timeZone,
-							});
-						} else {
-							// Event exists - update line number if needed
-							const syncInfo = this.syncManager.getSyncInfo(taskId);
-							if (syncInfo && syncInfo.lineNumber !== op.task.lineNumber) {
-								this.syncManager.updateSyncLineNumber(taskId, op.task.lineNumber);
+							// Handle based on externalEventBehavior setting
+							const behavior = this.settings.externalEventBehavior;
+
+							if (behavior === 'recreate') {
+								// Queue for recreation (current behavior)
+								const reminderMinutes = op.task.reminderMinutes || this.settings.defaultReminderMinutes;
+								toRecreate.push({
+									id: `recreate_${taskId}`,
+									type: 'create',
+									calendarId: op.calendarId,
+									task: op.task,
+									durationMinutes: this.settings.defaultEventDurationMinutes,
+									reminderMinutes,
+									timeZone,
+								});
+							} else if (behavior === 'sever') {
+								// Sever the link - mark as severed (keeps record for reconciliation)
+								this.syncManager.markSevered(taskId);
+								this.syncManager.logOperation({
+									type: 'sever',
+									taskTitle: op.task.title,
+									filePath: op.task.filePath,
+									success: true,
+									batchId,
+								}, batchId);
+							} else {
+								// 'ask' mode - queue for user review
+								const syncInfo = this.syncManager.getSyncInfo(taskId);
+								const calendarName = await this.getCalendarNameById(op.calendarId);
+								this.syncManager.addPendingSeverance({
+									id: this.syncManager.generatePendingSeveranceId(),
+									taskId,
+									eventId: syncInfo?.eventId || '',
+									calendarId: op.calendarId,
+									calendarName: calendarName || op.calendarId,
+									eventTitle: op.task.title,
+									eventDate: op.task.date,
+									eventTime: op.task.time,
+									sourceFile: op.task.filePath,
+									detectedAt: new Date().toISOString(),
+									originalTaskLine: this.syncManager.reconstructTaskLine(syncInfo || {
+										eventId: '',
+										contentHash: '',
+										calendarId: op.calendarId,
+										title: op.task.title,
+										date: op.task.date,
+										time: op.task.time,
+										lineNumber: op.task.lineNumber,
+									}),
+								});
+								// Mark as severed so it doesn't keep getting checked (pending user decision)
+								this.syncManager.markSevered(taskId);
 							}
-							unchanged++;
+						} else {
+							// Event exists - check for time drift if strictTimeSync is enabled
+							let timeDriftDetected = false;
+
+							if (this.settings.strictTimeSync && result.body) {
+								const event = result.body;
+								const task = op.task;
+
+								// Get expected task datetime
+								let expectedTime: string | null = null;
+								if (task.isAllDay) {
+									// For all-day events, compare dates
+									expectedTime = task.date;
+								} else if (task.time) {
+									// For timed events, compare full datetime
+									expectedTime = `${task.date}T${task.time}`;
+								}
+
+								// Get actual event datetime from Google
+								let actualTime: string | null = null;
+								if (event.start?.date) {
+									// All-day event
+									actualTime = event.start.date;
+								} else if (event.start?.dateTime) {
+									// Timed event - extract date and time (ignore timezone for comparison)
+									const dt = event.start.dateTime;
+									// dateTime format: 2026-01-15T14:00:00-05:00 or 2026-01-15T14:00:00Z
+									const match = dt.match(/^(\d{4}-\d{2}-\d{2})T(\d{2}:\d{2})/);
+									if (match) {
+										actualTime = `${match[1]}T${match[2]}`;
+									}
+								}
+
+								// Compare times
+								if (expectedTime && actualTime && expectedTime !== actualTime) {
+									timeDriftDetected = true;
+								}
+							}
+
+							if (timeDriftDetected) {
+								// Time drift detected - handle based on externalEventBehavior setting
+								const behavior = this.settings.externalEventBehavior;
+
+								if (behavior === 'recreate') {
+									// Queue for update to fix the time
+									const reminderMinutes = op.task.reminderMinutes || this.settings.defaultReminderMinutes;
+									toRecreate.push({
+										id: `fix_time_${taskId}`,
+										type: 'update',
+										calendarId: op.calendarId,
+										eventId: op.eventId,
+										task: op.task,
+										durationMinutes: this.settings.defaultEventDurationMinutes,
+										reminderMinutes,
+										timeZone,
+									});
+								} else if (behavior === 'sever') {
+									// Sever the link - mark as severed (keeps record for reconciliation)
+									this.syncManager.markSevered(taskId);
+									this.syncManager.logOperation({
+										type: 'sever',
+										taskTitle: op.task.title,
+										filePath: op.task.filePath,
+										success: true,
+										batchId,
+									}, batchId);
+								} else {
+									// 'ask' mode - queue for user review
+									const syncInfo = this.syncManager.getSyncInfo(taskId);
+									const calendarName = await this.getCalendarNameById(op.calendarId);
+									this.syncManager.addPendingSeverance({
+										id: this.syncManager.generatePendingSeveranceId(),
+										taskId,
+										eventId: syncInfo?.eventId || '',
+										calendarId: op.calendarId,
+										calendarName: calendarName || op.calendarId,
+										eventTitle: op.task.title,
+										eventDate: op.task.date,
+										eventTime: op.task.time,
+										sourceFile: op.task.filePath,
+										detectedAt: new Date().toISOString(),
+										originalTaskLine: this.syncManager.reconstructTaskLine(syncInfo || {
+											eventId: '',
+											contentHash: '',
+											calendarId: op.calendarId,
+											title: op.task.title,
+											date: op.task.date,
+											time: op.task.time,
+											lineNumber: op.task.lineNumber,
+										}),
+									});
+									// Mark as severed so it doesn't keep getting checked (pending user decision)
+									this.syncManager.markSevered(taskId);
+								}
+							} else {
+								// Event exists and times match (or strictTimeSync is off)
+								// Update line number if needed
+								const syncInfo = this.syncManager.getSyncInfo(taskId);
+								if (syncInfo && syncInfo.lineNumber !== op.task.lineNumber) {
+									this.syncManager.updateSyncLineNumber(taskId, op.task.lineNumber);
+								}
+								unchanged++;
+							}
 						}
 					}
 
@@ -1802,6 +2178,48 @@ class ChronosSettingTab extends PluginSettingTab {
 				safeModeStatus.classList.add('chronos-safe-mode-off');
 			}
 
+			// External Event Handling Section
+			containerEl.createEl('h3', { text: 'External Event Handling' });
+
+			const externalEventDesc = containerEl.createEl('p', { cls: 'chronos-external-event-desc' });
+			externalEventDesc.textContent = 'When Chronos can\'t find an event on its expected calendar (e.g., you moved or deleted it in Google Calendar):';
+
+			new Setting(containerEl)
+				.setName('Behavior')
+				.setDesc('Choose what happens when events are moved or deleted in Google Calendar')
+				.addDropdown(dropdown => dropdown
+					.addOption('ask', 'Ask me each time')
+					.addOption('sever', 'Sever link (stop tracking)')
+					.addOption('recreate', 'Recreate event')
+					.setValue(this.plugin.settings.externalEventBehavior)
+					.onChange(async (value: 'ask' | 'sever' | 'recreate') => {
+						this.plugin.settings.externalEventBehavior = value;
+						await this.plugin.saveSettings();
+					}));
+
+			// Warning/explanation box
+			const externalEventWarning = containerEl.createDiv({ cls: 'chronos-external-event-warning' });
+			externalEventWarning.innerHTML = `
+				<p><strong>Options explained:</strong></p>
+				<ul>
+					<li><strong>Ask me each time</strong> - Review each case and decide whether to recreate or stop tracking</li>
+					<li><strong>Sever link</strong> - Stop tracking the task, don't recreate the event</li>
+					<li><strong>Recreate event</strong> - Assume the deletion was accidental and recreate the event</li>
+				</ul>
+				<p class="chronos-recovery-note"><strong>Note:</strong> Severed tasks can sync again if you edit the title, date, or time. This creates a new event - it won't reconnect to the moved one.</p>
+			`;
+
+			// Strict Time Sync setting
+			new Setting(containerEl)
+				.setName('Strict time sync')
+				.setDesc('Detect when the Google Calendar event time differs from the Obsidian task time. When enabled, time changes made in Google Calendar will trigger the behavior above.')
+				.addToggle(toggle => toggle
+					.setValue(this.plugin.settings.strictTimeSync)
+					.onChange(async (value) => {
+						this.plugin.settings.strictTimeSync = value;
+						await this.plugin.saveSettings();
+					}));
+
 			// Agenda Settings Section
 			containerEl.createEl('h3', { text: 'Agenda Sidebar' });
 
@@ -2512,6 +2930,7 @@ interface SyncLogBatch {
 		completed: number;
 		recreated: number;
 		moved: number;
+		severed: number;
 		failed: number;
 	};
 }
@@ -2614,6 +3033,7 @@ class SyncLogModal extends Modal {
 				completed: 0,
 				recreated: 0,
 				moved: 0,
+				severed: 0,
 				failed: 0,
 			};
 
@@ -2632,6 +3052,8 @@ class SyncLogModal extends Modal {
 					summary.recreated++;
 				} else if (entry.type === 'move') {
 					summary.moved++;
+				} else if (entry.type === 'sever') {
+					summary.severed++;
 				}
 			}
 
@@ -2660,6 +3082,7 @@ class SyncLogModal extends Modal {
 		if (summary.deleted > 0) parts.push(`${summary.deleted} deleted`);
 		if (summary.completed > 0) parts.push(`${summary.completed} completed`);
 		if (summary.recreated > 0) parts.push(`${summary.recreated} recreated`);
+		if (summary.severed > 0) parts.push(`${summary.severed} severed`);
 		if (summary.failed > 0) parts.push(`${summary.failed} failed`);
 		return parts.length > 0 ? parts.join(', ') : 'No operations';
 	}
@@ -2732,6 +3155,7 @@ class SyncLogModal extends Modal {
 			complete: '✅',
 			recreate: '🔄',
 			move: '📦',
+			sever: '🔗',
 			error: '❌',
 		};
 
@@ -2742,6 +3166,7 @@ class SyncLogModal extends Modal {
 			complete: 'Completed',
 			recreate: 'Recreated',
 			move: 'Moved',
+			sever: 'Severed',
 			error: 'Error',
 		};
 

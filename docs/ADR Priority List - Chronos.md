@@ -1,8 +1,8 @@
 # ADR Priority List - Chronos
 
-**Last Updated:** January 8, 2026
+**Last Updated:** January 9, 2026
 **Version:** 0.1.0
-**Status:** Active Development - Phase 11 Complete (Safety Net)
+**Status:** Active Development - Phase 12 Complete (External Event Handling)
 
 ---
 
@@ -291,6 +291,34 @@ Each user creates their own Google Cloud project and provides their own Client I
 
 ---
 
+## Phase 12: External Event Handling - COMPLETE ✓
+
+**Goal:** Give users control over what happens when events are moved/deleted in Google Calendar.
+
+| Order | Feature | Status | Notes |
+|-------|---------|--------|-------|
+| 69 | External Event Behavior setting | ✓ Complete | Dropdown: ask/sever/recreate |
+| 70 | Pending severances queue | ✓ Complete | `pendingSeverances` array in sync data |
+| 71 | Severed task tracking | ✓ Complete | Sync record flag + legacy array |
+| 72 | 404 handling in sync logic | ✓ Complete | Routes to ask/sever/recreate based on setting |
+| 73 | Status bar indicator | ✓ Complete | Shows pending severance count |
+| 74 | Severance review modal | ✓ Complete | Per-item Sever/Recreate, batch actions |
+| 75 | Sever operation logging | ✓ Complete | 🔗 icon in sync history |
+| 76 | Auto-unsever on edit | ✓ Complete | Editing severed task clears flag, creates new event |
+
+**Key Features:**
+- Three behavior modes: Ask me each time (default), Sever link, Recreate event
+- Review modal for "ask" mode with per-item and batch actions
+- Severed tasks keep sync records for reconciliation
+- Editing a severed task's title/date/time creates a fresh sync
+
+**New Files:**
+- `src/severanceReviewModal.ts` - Review interface for disconnected events
+
+**Phase 12 Deliverable:** Users have full control over how moved/deleted events are handled. ✓
+
+---
+
 ## Maybe Someday (Post-BRAT)
 
 Features that are valuable but complex or low priority. May implement based on user demand.
@@ -314,6 +342,7 @@ Features that are valuable but complex or low priority. May implement based on u
 | ~~Embedded OAuth credentials~~ | ~~High~~ | ✓ Fixed - User-provided credentials |
 | ~~Task ID uses line number (wrong)~~ | ~~High~~ | ✓ Fixed - Title-based ID + two-pass reconciliation |
 | Accidental completion edge case | Low | Unchecking creates duplicate (user can delete manually) |
+| Severed task edit-back edge case | Medium | When severed task is edited, then edited back to original time, reconciliation doesn't detect the change and task remains severed. Workaround: edit to a different time than original. |
 
 ---
 
