@@ -1,30 +1,39 @@
-import { ItemView, WorkspaceLeaf } from 'obsidian';
+import { ItemView, WorkspaceLeaf, Editor } from 'obsidian';
 import { GoogleEvent } from './googleCalendar';
 import { SyncedTaskInfo } from './syncManager';
 
 export const AGENDA_VIEW_TYPE = 'chronos-agenda-view';
 
+/**
+ * An event with calendar metadata for display in the agenda
+ */
+export interface AgendaEvent extends GoogleEvent {
+    calendarId: string;
+    calendarName: string;
+    calendarColor: string;
+}
+
 export interface AgendaViewDeps {
     isAuthenticated: () => boolean;
-    hasCalendarSelected: () => boolean;
-    fetchEventsForDate: (date: Date) => Promise<GoogleEvent[]>;
+    hasCalendarsSelected: () => boolean;
+    fetchEventsForDate: (date: Date) => Promise<AgendaEvent[]>;
     fetchEventColors: () => Promise<Record<string, string>>;
-    getCalendarColor: () => Promise<string | null>;
     getSyncedTasks: () => Record<string, SyncedTaskInfo>;
     getTimeZone: () => string;
     openFile: (filePath: string, lineNumber: number) => Promise<void>;
+    importAgendaToEditor: (editor: Editor, date: Date) => Promise<void>;
+    getActiveEditor: () => Editor | null;
 }
 
 export class AgendaView extends ItemView {
     private deps: AgendaViewDeps;
-    private events: GoogleEvent[] = [];
+    private events: AgendaEvent[] = [];
     private isLoading: boolean = false;
     private lastError: string | null = null;
     private refreshIntervalId: number | null = null;
     private refreshIntervalMs: number = 600000; // 10 minutes default
     private currentDate: Date = new Date();
     private colorPalette: Record<string, string> = {};
-    private calendarColor: string | null = null;
     private colorsLoaded: boolean = false;
 
     constructor(leaf: WorkspaceLeaf, deps: AgendaViewDeps) {
@@ -32,6 +41,13 @@ export class AgendaView extends ItemView {
         this.deps = deps;
         // Reset to today
         this.currentDate = this.getStartOfDay(new Date());
+    }
+
+    /**
+     * Get the current date being viewed (for import feature)
+     */
+    getCurrentDate(): Date {
+        return this.currentDate;
     }
 
     getViewType(): string {
@@ -70,7 +86,6 @@ export class AgendaView extends ItemView {
      */
     reloadColors(): void {
         this.colorsLoaded = false;
-        this.calendarColor = null;
     }
 
     private startAutoRefresh(): void {
@@ -97,13 +112,8 @@ export class AgendaView extends ItemView {
 
         try {
             if (this.deps.isAuthenticated()) {
-                // Load event color palette and calendar's default color in parallel
-                const [palette, calColor] = await Promise.all([
-                    this.deps.fetchEventColors(),
-                    this.deps.getCalendarColor()
-                ]);
-                this.colorPalette = palette;
-                this.calendarColor = calColor;
+                // Load event color palette for custom-colored events
+                this.colorPalette = await this.deps.fetchEventColors();
                 this.colorsLoaded = true;
             }
         } catch (error) {
@@ -121,8 +131,8 @@ export class AgendaView extends ItemView {
             if (!this.deps.isAuthenticated()) {
                 this.lastError = 'Not connected to Google Calendar';
                 this.events = [];
-            } else if (!this.deps.hasCalendarSelected()) {
-                this.lastError = 'No calendar selected';
+            } else if (!this.deps.hasCalendarsSelected()) {
+                // No calendars selected - show empty state, not an error
                 this.events = [];
             } else {
                 // Load colors if not loaded yet
@@ -226,6 +236,22 @@ export class AgendaView extends ItemView {
         refreshBtn.innerHTML = '↻';
         refreshBtn.addEventListener('click', () => this.refresh());
 
+        // Import button
+        const importBtn = actionRow.createEl('button', {
+            cls: 'chronos-agenda-import-btn',
+            attr: { 'aria-label': 'Import agenda to current file' }
+        });
+        importBtn.innerHTML = '📋';
+        importBtn.addEventListener('click', async () => {
+            const editor = this.deps.getActiveEditor();
+            if (editor) {
+                await this.deps.importAgendaToEditor(editor, this.currentDate);
+            } else {
+                // No active editor - could show a notice, but the main.ts handler will do that
+                await this.deps.importAgendaToEditor(null as any, this.currentDate);
+            }
+        });
+
         // Loading state
         if (this.isLoading) {
             container.createDiv({ cls: 'chronos-agenda-loading', text: 'Loading...' });
@@ -245,13 +271,19 @@ export class AgendaView extends ItemView {
             return;
         }
 
-        // Empty state
+        // Empty state - check if no calendars selected vs no events
         if (this.events.length === 0) {
-            const dayLabel = this.isToday() ? 'today' : 'this day';
-            container.createDiv({
-                cls: 'chronos-agenda-empty',
-                text: `No events ${dayLabel}`
-            });
+            const emptyDiv = container.createDiv({ cls: 'chronos-agenda-empty' });
+            if (!this.deps.hasCalendarsSelected()) {
+                emptyDiv.setText('No calendars selected');
+                emptyDiv.createEl('p', {
+                    text: 'Go to Settings → Chronos → Agenda View to select calendars.',
+                    cls: 'chronos-agenda-empty-hint'
+                });
+            } else {
+                const dayLabel = this.isToday() ? 'today' : 'this day';
+                emptyDiv.setText(`No events ${dayLabel}`);
+            }
             return;
         }
 
@@ -270,7 +302,7 @@ export class AgendaView extends ItemView {
         }
     }
 
-    private getEventColor(event: GoogleEvent): string | null {
+    private getEventColor(event: AgendaEvent): string | null {
         // First check if event has a direct background color (individually colored event)
         if (event.backgroundColor) {
             return event.backgroundColor;
@@ -282,8 +314,8 @@ export class AgendaView extends ItemView {
         }
 
         // Fall back to the calendar's default color
-        if (this.calendarColor) {
-            return this.calendarColor;
+        if (event.calendarColor) {
+            return event.calendarColor;
         }
 
         return null;
@@ -291,16 +323,23 @@ export class AgendaView extends ItemView {
 
     private renderEventCard(
         container: HTMLElement,
-        event: GoogleEvent,
+        event: AgendaEvent,
         syncInfo?: SyncedTaskInfo
     ): void {
         const card = container.createDiv({ cls: 'chronos-agenda-card' });
+
+        // Add calendar name as tooltip
+        card.setAttr('title', event.calendarName);
 
         // Apply event color as border
         const eventColor = this.getEventColor(event);
         if (eventColor) {
             card.style.borderLeftColor = eventColor;
         }
+
+        // Calendar color dot (for multi-calendar differentiation)
+        const colorDot = card.createSpan({ cls: 'chronos-agenda-calendar-dot' });
+        colorDot.style.backgroundColor = event.calendarColor || '#4285f4';
 
         // Time display
         const timeDiv = card.createDiv({ cls: 'chronos-agenda-card-time' });

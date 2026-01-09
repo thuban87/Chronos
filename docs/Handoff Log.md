@@ -1,9 +1,110 @@
 # Chronos Handoff Log
 
 **Last Updated:** January 9, 2026
-**Current Phase:** Recurring Events COMPLETE
-**Current Branch:** feature/recurring-events
+**Current Phase:** Multi-Calendar Agenda & Import COMPLETE
+**Current Branch:** feature/multi-calendar-agenda
 **Version:** 0.1.0
+
+---
+
+## Session: January 9, 2026 - Multi-Calendar Agenda & Event Import
+
+### Feature Overview
+
+Two related features for the agenda sidebar:
+
+1. **Multi-Calendar Agenda View:** Show events from multiple calendars in the agenda sidebar (not just the synced calendar)
+2. **Import Events to File:** Insert the day's agenda into the current note as markdown
+
+### What Was Built
+
+| Component | Description |
+|-----------|-------------|
+| **Multi-Calendar Selection** | Settings UI with checkboxes for each available calendar |
+| **Calendar Color Dots** | Each event shows a color dot indicating its source calendar |
+| **Select All / Clear All** | Quick actions to select/deselect all calendars |
+| **Import Command** | "Chronos: Import agenda to current file" command |
+| **Import Button** | 📋 button in agenda sidebar header for quick import |
+| **Three Import Formats** | List (with links), Table, and Simple (no links) |
+| **Format Setting** | User can choose preferred import format in settings |
+
+### Settings Added
+
+| Setting | Description |
+|---------|-------------|
+| `agendaCalendarIds` | Array of calendar IDs to show in agenda |
+| `agendaImportFormat` | 'list' \| 'table' \| 'simple' format for imports |
+
+### Key Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Default calendar | NOT always shown | User can uncheck all calendars, shows empty state |
+| API calls | One per selected calendar per day | Minimizes API usage |
+| Calendar name display | Hover tooltip only | Keeps UI clean |
+| Import date source | Agenda's current date | More useful than always today |
+
+### Import Format Examples
+
+**List (default):**
+```markdown
+## Agenda for Thursday, January 9, 2026
+
+- 09:00 AM - [Team standup](https://calendar.google.com/...)
+- 02:00 PM - [Client call](https://calendar.google.com/...)
+```
+
+**Table:**
+```markdown
+## Agenda for Thursday, January 9, 2026
+
+| Time | Event |
+|------|-------|
+| 09:00 AM | [Team standup](link) |
+```
+
+**Simple:**
+```markdown
+## Agenda for Thursday, January 9, 2026
+
+- 09:00 AM - Team standup
+- 02:00 PM - Client call
+```
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `main.ts` | Settings interface, AgendaViewDeps, fetchAgendaEventsForDate(), importAgendaToEditor(), import command, settings UI |
+| `src/agendaView.ts` | AgendaEvent interface, multi-calendar support, import button, color dots, updated deps interface |
+| `styles.css` | Calendar checkbox UI, color dots, import button, empty state hint |
+
+### Testing Checklist
+
+- [ ] Settings: Calendar checkboxes load and save correctly
+- [ ] Settings: Select All / Clear All work
+- [ ] Settings: Import format dropdown works
+- [ ] Agenda: Shows events from multiple selected calendars
+- [ ] Agenda: Calendar color dots display correctly
+- [ ] Agenda: Empty state shows "No calendars selected" when none checked
+- [ ] Agenda: Hover on event shows calendar name
+- [ ] Import: Command appears in palette
+- [ ] Import: Button in agenda works
+- [ ] Import: Uses agenda's current date (not always today)
+- [ ] Import: All three formats work correctly
+- [ ] Import: Links open Google Calendar
+
+### Git Commit Suggestion
+
+```
+feat: Multi-calendar agenda view and event import
+
+- Add calendar selection checkboxes in settings
+- Display events from multiple calendars with color dots
+- Add import command and button to insert agenda into notes
+- Support three import formats: list, table, simple
+- Calendar name shown on hover for each event
+```
 
 ---
 
@@ -589,12 +690,12 @@ Polished Phase 9 features with improved UX. Added custom reminders UI to the dat
 ## Next Session Prompt
 
 ```
-Chronos - Ready for Testing / Next Feature
+Chronos - Multi-Calendar Agenda & Import COMPLETE
 
 **Directory:** C:\Users\bwales\projects\obsidian-plugins\Chronos
 **Deploy to:** G:\My Drive\IT\Obsidian Vault\My Notebooks\.obsidian\plugins\chronos\
 **GitHub:** https://github.com/thuban87/Chronos (public)
-**Current branch:** feature/phase-12-external-event-handling (merge to main when ready)
+**Current branch:** feature/multi-calendar-agenda
 **Version:** 0.1.0
 
 **IMPORTANT: Read docs\Handoff Log.md and docs\ADR Priority List - Chronos.md first**
@@ -603,15 +704,12 @@ Chronos - Ready for Testing / Next Feature
 
 ## Context
 
-Phase 12 (External Event Handling) is COMPLETE. The plugin now handles moved/deleted events:
-- Users choose: Ask each time, Sever link, or Recreate event
-- Review modal for pending severances
-- Severed tasks can sync again if edited
-
-The plugin is feature-complete for MVP+ and ready for:
-1. Extended testing with your real vault
-2. BRAT beta release
-3. Or picking a feature from "Maybe Someday" list
+Multi-Calendar Agenda & Event Import is COMPLETE:
+- Agenda sidebar can show events from multiple calendars
+- Calendar selection checkboxes in settings
+- Color dots show which calendar each event is from
+- Import command and button to insert agenda into notes
+- Three import formats: list (links), table, simple (no links)
 
 ---
 
@@ -623,12 +721,15 @@ The plugin is feature-complete for MVP+ and ready for:
 - Robust task reconciliation (renames, rescheduling, moves all work)
 - Preserves user-edited event data (description, location, attendees)
 - Custom per-task reminders (🔔 syntax)
-- Agenda sidebar view
+- **Multi-calendar agenda sidebar** (NEW)
+- **Event import to file** (NEW)
 - Sync history with batched logs
 - Batch API for fast syncing
 - Smart retry on server errors
 - Safety Net deletion protection
 - External Event Handling (moved/deleted events in Google Calendar)
+- Recurring events with 🔁 syntax
+- Custom duration with ⏱️ syntax
 
 ---
 
@@ -640,9 +741,9 @@ The plugin is feature-complete for MVP+ and ready for:
 
 ## Suggested Next Steps
 
-1. **Test external event handling** - Move an event in Google Calendar, run sync
-2. **Consider BRAT release** - Plugin is ready for beta testers
-3. **Maybe Someday features** - Two-way sync, recurring events, event colors
+1. **Test multi-calendar agenda** - Select multiple calendars, verify display
+2. **Test import feature** - Import agenda to notes in all three formats
+3. **Consider BRAT release** - Plugin is feature-rich and ready for beta testers
 
 ---
 

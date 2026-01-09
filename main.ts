@@ -4,7 +4,7 @@ import { TaskParser, ChronosTask } from './src/taskParser';
 import { DateTimeModal } from './src/dateTimeModal';
 import { GoogleCalendarApi, GoogleCalendar, GoogleEvent } from './src/googleCalendar';
 import { SyncManager, ChronosSyncData, PendingOperation, SyncLogEntry, MultiCalendarSyncDiff, SyncedTaskInfo, PendingDeletion, DeletedEventRecord, PendingSeverance } from './src/syncManager';
-import { AgendaView, AGENDA_VIEW_TYPE, AgendaViewDeps } from './src/agendaView';
+import { AgendaView, AGENDA_VIEW_TYPE, AgendaViewDeps, AgendaEvent } from './src/agendaView';
 import { BatchCalendarApi, ChangeSetOperation, BatchResult, DivertedDeletion, PendingRecurringCompletion, generateOperationId } from './src/batchApi';
 import { RecurringDeleteModal, RecurringDeleteChoice } from './src/recurringDeleteModal';
 import { DeletionReviewModal } from './src/deletionReviewModal';
@@ -29,6 +29,8 @@ interface ChronosSettings {
 	safeMode: boolean;  // Safety Net: require approval for deletions
 	externalEventBehavior: 'ask' | 'sever' | 'recreate';  // What to do when events are moved/deleted in Google Calendar
 	strictTimeSync: boolean;  // Detect when Google event time differs from Obsidian task time
+	agendaCalendarIds: string[];  // Calendar IDs to display in agenda (empty = none selected)
+	agendaImportFormat: 'list' | 'table' | 'simple';  // Format for importing agenda to file
 }
 
 interface ChronosData {
@@ -51,7 +53,9 @@ const DEFAULT_SETTINGS: ChronosSettings = {
 	eventRoutingBehavior: 'preserve',
 	safeMode: true,  // Safety Net enabled by default
 	externalEventBehavior: 'ask',  // Default: ask user what to do with moved/deleted events
-	strictTimeSync: false  // Default: don't check for time drift
+	strictTimeSync: false,  // Default: don't check for time drift
+	agendaCalendarIds: [],  // Empty = no calendars selected for agenda
+	agendaImportFormat: 'list',  // Default to list format
 };
 
 export default class ChronosPlugin extends Plugin {
@@ -81,13 +85,29 @@ export default class ChronosPlugin extends Plugin {
 		this.registerView(AGENDA_VIEW_TYPE, (leaf) => {
 			const deps: AgendaViewDeps = {
 				isAuthenticated: () => this.isAuthenticated(),
-				hasCalendarSelected: () => !!this.settings.googleCalendarId,
-				fetchEventsForDate: (date: Date) => this.fetchEventsForDate(date),
+				hasCalendarsSelected: () => this.settings.agendaCalendarIds.length > 0,
+				fetchEventsForDate: (date: Date) => this.fetchAgendaEventsForDate(date),
 				fetchEventColors: () => this.calendarApi.getEventColors(),
-				getCalendarColor: () => this.getSelectedCalendarColor(),
 				getSyncedTasks: () => this.syncManager.getSyncData().syncedTasks,
 				getTimeZone: () => this.getTimeZone(),
 				openFile: (filePath, lineNumber) => this.openFileAtLine(filePath, lineNumber),
+				importAgendaToEditor: (editor, date) => this.importAgendaToEditor(editor, date),
+				getActiveEditor: () => {
+					// First try the active view
+					const activeView = this.app.workspace.getActiveViewOfType(MarkdownView);
+					if (activeView?.editor) {
+						return activeView.editor;
+					}
+					// If sidebar has focus, find any open markdown view
+					const leaves = this.app.workspace.getLeavesOfType('markdown');
+					for (const leaf of leaves) {
+						const view = leaf.view as MarkdownView;
+						if (view?.editor) {
+							return view.editor;
+						}
+					}
+					return null;
+				},
 			};
 			const view = new AgendaView(leaf, deps);
 			view.setRefreshInterval(this.settings.agendaRefreshIntervalMinutes * 60 * 1000);
@@ -187,6 +207,24 @@ export default class ChronosPlugin extends Plugin {
 			name: "Toggle today's agenda sidebar",
 			callback: async () => {
 				await this.toggleAgendaView();
+			}
+		});
+
+		// Add command to import agenda to current file
+		this.addCommand({
+			id: 'import-agenda-to-file',
+			name: 'Import agenda to current file',
+			editorCallback: async (editor: any) => {
+				// Use the agenda's current date if available, otherwise today
+				const agendaLeaves = this.app.workspace.getLeavesOfType(AGENDA_VIEW_TYPE);
+				let importDate = new Date();
+
+				if (agendaLeaves.length > 0) {
+					const agendaView = agendaLeaves[0].view as AgendaView;
+					importDate = agendaView.getCurrentDate();
+				}
+
+				await this.importAgendaToEditor(editor, importDate);
 			}
 		});
 
@@ -1727,7 +1765,7 @@ export default class ChronosPlugin extends Plugin {
 	}
 
 	/**
-	 * Fetch events for a specific date from Google Calendar
+	 * Fetch events for a specific date from Google Calendar (single calendar - used by sync)
 	 */
 	async fetchEventsForDate(date: Date): Promise<GoogleEvent[]> {
 		const calendarId = this.settings.googleCalendarId;
@@ -1742,6 +1780,154 @@ export default class ChronosPlugin extends Plugin {
 		const endOfDay = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59);
 
 		return await this.calendarApi.listEvents(calendarId, startOfDay, endOfDay, timeZone);
+	}
+
+	/**
+	 * Fetch events from multiple calendars for the agenda view
+	 * Returns AgendaEvent[] with calendar metadata attached to each event
+	 */
+	async fetchAgendaEventsForDate(date: Date): Promise<AgendaEvent[]> {
+		const calendarIds = this.settings.agendaCalendarIds;
+		if (calendarIds.length === 0) {
+			return [];
+		}
+
+		const timeZone = this.getTimeZone();
+		const startOfDay = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 0, 0, 0);
+		const endOfDay = new Date(date.getFullYear(), date.getMonth(), date.getDate(), 23, 59, 59);
+
+		// Fetch calendar list for names and colors (cache this if needed)
+		let calendars: GoogleCalendar[] = [];
+		try {
+			calendars = await this.calendarApi.listCalendars();
+		} catch (error) {
+			console.error('Chronos: Failed to fetch calendar list for agenda:', error);
+		}
+
+		const allEvents: AgendaEvent[] = [];
+
+		// Fetch from each selected calendar
+		for (const calendarId of calendarIds) {
+			try {
+				const events = await this.calendarApi.listEvents(calendarId, startOfDay, endOfDay, timeZone);
+				const calendarInfo = calendars.find(c => c.id === calendarId);
+
+				for (const event of events) {
+					allEvents.push({
+						...event,
+						calendarId,
+						calendarName: calendarInfo?.summary || 'Unknown Calendar',
+						calendarColor: calendarInfo?.backgroundColor || '#4285f4',
+					});
+				}
+			} catch (error) {
+				console.error(`Chronos: Failed to fetch events from calendar ${calendarId}:`, error);
+				// Continue with other calendars
+			}
+		}
+
+		// Sort by start time
+		allEvents.sort((a, b) => {
+			const aTime = a.start.dateTime || a.start.date || '';
+			const bTime = b.start.dateTime || b.start.date || '';
+			return aTime.localeCompare(bTime);
+		});
+
+		return allEvents;
+	}
+
+	/**
+	 * Import agenda events into the editor at cursor position
+	 */
+	async importAgendaToEditor(editor: any, date: Date): Promise<void> {
+		if (!editor) {
+			new Notice('Open a note to import agenda');
+			return;
+		}
+
+		try {
+			const events = await this.fetchAgendaEventsForDate(date);
+
+			if (events.length === 0) {
+				new Notice('No events found for this day');
+				return;
+			}
+
+			const lines: string[] = [];
+			const dateStr = date.toLocaleDateString('en-US', {
+				weekday: 'long',
+				year: 'numeric',
+				month: 'long',
+				day: 'numeric'
+			});
+
+			const format = this.settings.agendaImportFormat;
+
+			if (format === 'table') {
+				lines.push(`## Agenda for ${dateStr}`);
+				lines.push('');
+				lines.push('| Time | Event |');
+				lines.push('|------|-------|');
+
+				for (const event of events) {
+					const timeStr = this.formatEventTimeForImport(event);
+					const title = event.summary || 'Untitled';
+					const link = event.htmlLink ? `[${title}](${event.htmlLink})` : title;
+					lines.push(`| ${timeStr} | ${link} |`);
+				}
+			} else if (format === 'simple') {
+				lines.push(`## Agenda for ${dateStr}`);
+				lines.push('');
+
+				for (const event of events) {
+					const timeStr = this.formatEventTimeForImport(event);
+					const title = event.summary || 'Untitled';
+					lines.push(`- ${timeStr} - ${title}`);
+				}
+			} else {
+				// Default: list format with links
+				lines.push(`## Agenda for ${dateStr}`);
+				lines.push('');
+
+				for (const event of events) {
+					const timeStr = this.formatEventTimeForImport(event);
+					const title = event.summary || 'Untitled';
+					const link = event.htmlLink || '#';
+					lines.push(`- ${timeStr} - [${title}](${link})`);
+				}
+			}
+
+			lines.push('');
+
+			// Insert at cursor position
+			const cursor = editor.getCursor();
+			editor.replaceRange(lines.join('\n'), cursor);
+
+			new Notice(`Imported ${events.length} event${events.length === 1 ? '' : 's'}`);
+		} catch (error: any) {
+			console.error('Chronos: Failed to import agenda:', error);
+			new Notice(`Failed to import agenda: ${error?.message || 'Unknown error'}`);
+		}
+	}
+
+	/**
+	 * Format event time for agenda import
+	 */
+	private formatEventTimeForImport(event: AgendaEvent): string {
+		if (event.start.date) {
+			return 'All day';
+		}
+
+		if (event.start.dateTime) {
+			const startTime = new Date(event.start.dateTime);
+			return startTime.toLocaleTimeString('en-US', {
+				hour: '2-digit',
+				minute: '2-digit',
+				hour12: true
+			});
+		}
+
+		return '';
 	}
 
 	/**
@@ -2246,6 +2432,30 @@ class ChronosSettingTab extends PluginSettingTab {
 					});
 				});
 
+			// Agenda View Section
+			containerEl.createEl('h3', { text: 'Agenda View' });
+
+			const agendaDesc = containerEl.createEl('p', { cls: 'chronos-agenda-settings-desc' });
+			agendaDesc.textContent = 'Choose which calendars to display in the agenda sidebar and how to format imported events.';
+
+			// Calendar checkboxes container
+			const calendarCheckboxContainer = containerEl.createDiv({ cls: 'chronos-agenda-calendar-checkboxes' });
+			this.renderAgendaCalendarCheckboxes(calendarCheckboxContainer);
+
+			// Import format setting
+			new Setting(containerEl)
+				.setName('Import format')
+				.setDesc('Format for importing agenda to notes')
+				.addDropdown(dropdown => dropdown
+					.addOption('list', 'List - Bullet points with links')
+					.addOption('table', 'Table - Time and event columns')
+					.addOption('simple', 'Simple - Plain text, no links')
+					.setValue(this.plugin.settings.agendaImportFormat)
+					.onChange(async (value: 'list' | 'table' | 'simple') => {
+						this.plugin.settings.agendaImportFormat = value;
+						await this.plugin.saveSettings();
+					}));
+
 			// Safety Net Section
 			containerEl.createEl('h3', { text: 'Safety Net' });
 
@@ -2595,6 +2805,102 @@ class ChronosSettingTab extends PluginSettingTab {
 
 			// Re-render
 			this.renderTagMappings(container);
+		});
+	}
+
+	/**
+	 * Render the agenda calendar checkboxes for selecting which calendars to show in agenda
+	 */
+	private renderAgendaCalendarCheckboxes(container: HTMLElement): void {
+		container.empty();
+
+		if (!this.calendars || this.calendars.length === 0) {
+			container.createEl('p', {
+				text: 'Loading calendars...',
+				cls: 'chronos-muted'
+			});
+
+			// Try to load calendars
+			this.plugin.calendarApi.listCalendars().then(calendars => {
+				this.calendars = calendars;
+				this.renderAgendaCalendarCheckboxes(container);
+			}).catch(error => {
+				container.empty();
+				container.createEl('p', {
+					text: 'Failed to load calendars. Check your connection.',
+					cls: 'chronos-muted'
+				});
+			});
+			return;
+		}
+
+		const heading = container.createEl('p', {
+			text: 'Select calendars to display in the agenda sidebar:',
+			cls: 'chronos-agenda-checkbox-heading'
+		});
+
+		const checkboxList = container.createDiv({ cls: 'chronos-agenda-checkbox-list' });
+
+		for (const cal of this.calendars) {
+			const isChecked = this.plugin.settings.agendaCalendarIds.includes(cal.id);
+
+			const row = checkboxList.createDiv({ cls: 'chronos-agenda-checkbox-row' });
+
+			// Color indicator
+			const colorDot = row.createSpan({ cls: 'chronos-agenda-checkbox-color' });
+			colorDot.style.backgroundColor = cal.backgroundColor || '#4285f4';
+
+			const checkbox = row.createEl('input', {
+				type: 'checkbox',
+				attr: {
+					id: `agenda-cal-${cal.id.replace(/[^a-zA-Z0-9]/g, '-')}`,
+				}
+			});
+			checkbox.checked = isChecked;
+
+			const label = row.createEl('label', {
+				text: cal.summary + (cal.primary ? ' (Primary)' : ''),
+				attr: { for: `agenda-cal-${cal.id.replace(/[^a-zA-Z0-9]/g, '-')}` }
+			});
+
+			checkbox.addEventListener('change', async () => {
+				if (checkbox.checked) {
+					if (!this.plugin.settings.agendaCalendarIds.includes(cal.id)) {
+						this.plugin.settings.agendaCalendarIds.push(cal.id);
+					}
+				} else {
+					this.plugin.settings.agendaCalendarIds =
+						this.plugin.settings.agendaCalendarIds.filter(id => id !== cal.id);
+				}
+				await this.plugin.saveSettings();
+				// Refresh agenda views to show new calendar selection
+				this.plugin.refreshAgendaViews(true);
+			});
+		}
+
+		// Quick actions
+		const quickActions = container.createDiv({ cls: 'chronos-agenda-quick-actions' });
+
+		const selectAllBtn = quickActions.createEl('button', {
+			text: 'Select All',
+			cls: 'chronos-agenda-quick-btn'
+		});
+		selectAllBtn.addEventListener('click', async () => {
+			this.plugin.settings.agendaCalendarIds = this.calendars.map(c => c.id);
+			await this.plugin.saveSettings();
+			this.renderAgendaCalendarCheckboxes(container);
+			this.plugin.refreshAgendaViews(true);
+		});
+
+		const clearAllBtn = quickActions.createEl('button', {
+			text: 'Clear All',
+			cls: 'chronos-agenda-quick-btn'
+		});
+		clearAllBtn.addEventListener('click', async () => {
+			this.plugin.settings.agendaCalendarIds = [];
+			await this.plugin.saveSettings();
+			this.renderAgendaCalendarCheckboxes(container);
+			this.plugin.refreshAgendaViews(true);
 		});
 	}
 
