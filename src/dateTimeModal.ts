@@ -1,5 +1,7 @@
 import { App, Modal, Setting } from 'obsidian';
 
+export type RecurrenceFrequency = 'none' | 'daily' | 'weekly' | 'monthly' | 'yearly';
+
 export interface DateTimeResult {
     date: string;      // YYYY-MM-DD
     time: string | null;  // HH:mm or null for all-day
@@ -10,6 +12,9 @@ export interface DateTimeResult {
     customDuration: boolean;
     durationHours: number | null;
     durationMinutes: number | null;
+    recurrenceFrequency: RecurrenceFrequency;
+    recurrenceInterval: number;
+    recurrenceWeekdays: string[];  // ['monday', 'wednesday', 'friday']
 }
 
 export class DateTimeModal extends Modal {
@@ -31,7 +36,10 @@ export class DateTimeModal extends Modal {
             reminder2: null,
             customDuration: false,
             durationHours: null,
-            durationMinutes: null
+            durationMinutes: null,
+            recurrenceFrequency: 'none',
+            recurrenceInterval: 1,
+            recurrenceWeekdays: []
         };
     }
 
@@ -56,17 +64,19 @@ export class DateTimeModal extends Modal {
         this.createQuickButton(quickDates, 'Tomorrow', tomorrow);
         this.createQuickButton(quickDates, '+1 Week', nextWeek);
 
-        // Date input
-        new Setting(contentEl)
-            .setName('Date')
-            .addText(text => text
-                .setPlaceholder('YYYY-MM-DD')
-                .setValue(this.result.date)
-                .onChange(value => {
-                    if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-                        this.result.date = value;
-                    }
-                }));
+        // Date input (native date picker)
+        const dateSetting = new Setting(contentEl)
+            .setName('Date');
+        const dateInput = dateSetting.controlEl.createEl('input', {
+            type: 'date',
+            cls: 'chronos-date-picker'
+        });
+        dateInput.value = this.result.date;
+        dateInput.addEventListener('change', () => {
+            if (dateInput.value) {
+                this.result.date = dateInput.value;
+            }
+        });
 
         // Time dropdown
         new Setting(contentEl)
@@ -214,6 +224,88 @@ export class DateTimeModal extends Modal {
         });
         minutesDiv.createEl('span', { text: 'm', cls: 'chronos-duration-unit' });
 
+        // Recurrence section
+        const recurrenceContainer = contentEl.createDiv({ cls: 'chronos-recurrence-section' });
+
+        new Setting(recurrenceContainer)
+            .setName('Repeat')
+            .setDesc('Make this a recurring event')
+            .addDropdown(dropdown => {
+                dropdown.addOption('none', 'Does not repeat');
+                dropdown.addOption('daily', 'Daily');
+                dropdown.addOption('weekly', 'Weekly');
+                dropdown.addOption('monthly', 'Monthly');
+                dropdown.addOption('yearly', 'Yearly');
+                dropdown.setValue(this.result.recurrenceFrequency);
+                dropdown.onChange((value: RecurrenceFrequency) => {
+                    this.result.recurrenceFrequency = value;
+                    recurrenceOptions.style.display = value !== 'none' ? 'block' : 'none';
+                    weekdayOptions.style.display = value === 'weekly' ? 'flex' : 'none';
+                });
+            });
+
+        const recurrenceOptions = recurrenceContainer.createDiv({ cls: 'chronos-recurrence-options' });
+        recurrenceOptions.style.display = this.result.recurrenceFrequency !== 'none' ? 'block' : 'none';
+
+        // Interval input (every N days/weeks/etc)
+        const intervalDiv = recurrenceOptions.createDiv({ cls: 'chronos-interval-input' });
+        intervalDiv.createEl('span', { text: 'Every ' });
+        const intervalInput = intervalDiv.createEl('input', {
+            type: 'number',
+            cls: 'chronos-interval-field'
+        });
+        intervalInput.min = '1';
+        intervalInput.max = '99';
+        intervalInput.value = String(this.result.recurrenceInterval);
+        intervalInput.addEventListener('input', () => {
+            const val = parseInt(intervalInput.value, 10);
+            this.result.recurrenceInterval = isNaN(val) || val < 1 ? 1 : val;
+        });
+        const intervalLabel = intervalDiv.createEl('span', { cls: 'chronos-interval-label' });
+        intervalLabel.setText(this.getIntervalLabel(this.result.recurrenceFrequency, this.result.recurrenceInterval));
+
+        // Update interval label when frequency changes
+        const updateIntervalLabel = () => {
+            intervalLabel.setText(this.getIntervalLabel(this.result.recurrenceFrequency, this.result.recurrenceInterval));
+        };
+        intervalInput.addEventListener('input', updateIntervalLabel);
+
+        // Weekday checkboxes (for weekly recurrence)
+        const weekdayOptions = recurrenceOptions.createDiv({ cls: 'chronos-weekday-options' });
+        weekdayOptions.style.display = this.result.recurrenceFrequency === 'weekly' ? 'flex' : 'none';
+
+        const weekdays = [
+            { key: 'sunday', label: 'S' },
+            { key: 'monday', label: 'M' },
+            { key: 'tuesday', label: 'T' },
+            { key: 'wednesday', label: 'W' },
+            { key: 'thursday', label: 'T' },
+            { key: 'friday', label: 'F' },
+            { key: 'saturday', label: 'S' }
+        ];
+
+        for (const day of weekdays) {
+            const dayBtn = weekdayOptions.createEl('button', {
+                text: day.label,
+                cls: 'chronos-weekday-btn'
+            });
+            dayBtn.dataset.day = day.key;
+            if (this.result.recurrenceWeekdays.includes(day.key)) {
+                dayBtn.addClass('is-selected');
+            }
+            dayBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                const isSelected = this.result.recurrenceWeekdays.includes(day.key);
+                if (isSelected) {
+                    this.result.recurrenceWeekdays = this.result.recurrenceWeekdays.filter(d => d !== day.key);
+                    dayBtn.removeClass('is-selected');
+                } else {
+                    this.result.recurrenceWeekdays.push(day.key);
+                    dayBtn.addClass('is-selected');
+                }
+            });
+        }
+
         // Buttons
         const buttonContainer = contentEl.createDiv({ cls: 'chronos-button-container' });
 
@@ -254,6 +346,22 @@ export class DateTimeModal extends Modal {
         const h12 = hours > 12 ? hours - 12 : hours === 0 ? 12 : hours;
         const m = String(minutes).padStart(2, '0');
         return `${h12}:${m} ${period}`;
+    }
+
+    private getIntervalLabel(frequency: RecurrenceFrequency, interval: number): string {
+        const plural = interval !== 1;
+        switch (frequency) {
+            case 'daily':
+                return plural ? ' days' : ' day';
+            case 'weekly':
+                return plural ? ' weeks' : ' week';
+            case 'monthly':
+                return plural ? ' months' : ' month';
+            case 'yearly':
+                return plural ? ' years' : ' year';
+            default:
+                return '';
+        }
     }
 
     onClose() {

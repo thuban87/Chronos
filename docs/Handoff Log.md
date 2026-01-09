@@ -1,9 +1,165 @@
 # Chronos Handoff Log
 
 **Last Updated:** January 9, 2026
-**Current Phase:** Phase 12 Complete - External Event Handling
-**Current Branch:** feature/phase-12-external-event-handling
+**Current Phase:** Recurring Events COMPLETE
+**Current Branch:** feature/recurring-events
 **Version:** 0.1.0
+
+---
+
+## Session: January 9, 2026 - Recurring Events Feature COMPLETE
+
+### Feature Overview
+
+Recurring Events allows users to create recurring calendar events using the Tasks plugin `🔁` syntax. The feature includes a modal UI for selecting recurrence patterns and special handling for completed recurring tasks.
+
+### What Was Built
+
+| Component | Description |
+|-----------|-------------|
+| **Recurrence Parser** | `src/recurrenceParser.ts` - Converts `🔁` syntax to Google RRULE format |
+| **Task Parsing** | Parse recurrence text and convert to RRULE in task scanning |
+| **Calendar Integration** | Pass RRULE to Google Calendar API for event creation/update |
+| **Modal UI** | Recurrence picker with frequency dropdown, interval input, weekday selector |
+| **Date Picker** | Changed date input from text field to native date picker |
+| **Recurring Delete Modal** | Options for handling completed recurring tasks |
+| **Smart Completion Handling** | Different behavior for Safety Net ON vs OFF |
+| **Sync Info Tracking** | Store `isRecurring` flag in sync data for reliable detection |
+
+### Syntax Examples
+
+```markdown
+- [ ] Daily standup 📅 2026-01-15 ⏰ 09:00 🔁 every day
+- [ ] Weekly review 📅 2026-01-15 ⏰ 14:00 🔁 every week
+- [ ] Biweekly sync 📅 2026-01-15 ⏰ 10:00 🔁 every 2 weeks
+- [ ] MWF workout 📅 2026-01-15 ⏰ 07:00 🔁 every monday, wednesday, friday
+```
+
+### Supported Patterns
+
+| Pattern | Example |
+|---------|---------|
+| Simple frequency | `every day`, `every week`, `every month`, `every year` |
+| With interval | `every 2 days`, `every 3 weeks`, `every 6 months` |
+| Single weekday | `every monday`, `every friday` |
+| Multiple weekdays | `every monday, wednesday, friday` |
+
+### Completed Recurring Task Handling
+
+**Critical Issue Solved:** Modifying a recurring event's title in Google Calendar breaks the recurrence series.
+
+**Safety Net ON (Default):**
+- Recurring task completed → Released from sync tracking
+- Calendar events stay intact (future reminders continue)
+- No API calls made to Google Calendar
+
+**Safety Net OFF:**
+- Shows RecurringDeleteModal with options:
+  - **Delete All Events**: Deletes entire series
+  - **Keep Events (Recommended)**: Release from tracking, calendar intact
+  - **Delete Next Instance**: Disabled (complex Google API - future enhancement)
+
+### Files Created/Modified
+
+| File | Changes |
+|------|---------|
+| `src/recurrenceParser.ts` | **NEW** - Parse 🔁 syntax to RRULE |
+| `src/recurringDeleteModal.ts` | **NEW** - Modal for completed recurring tasks |
+| `src/taskParser.ts` | Added RECURRENCE_PATTERN, recurrenceText/recurrenceRule fields |
+| `src/googleCalendar.ts` | Added recurrence array to event body, CreateEventParams |
+| `src/batchApi.ts` | Added recurrenceRule to ChangeSetOperation, PendingRecurringCompletion |
+| `src/syncManager.ts` | Pass recurrence through, special handling for recurring completions, isRecurring in SyncedTaskInfo |
+| `src/dateTimeModal.ts` | Added recurrence picker UI, changed date input to date picker |
+| `main.ts` | Handle recurring completions, show modal, build recurrence syntax |
+| `styles.css` | Styles for recurrence UI, weekday buttons, recurring delete modal |
+
+### Testing Results
+
+| Test | Result |
+|------|--------|
+| `🔁 every week` creates weekly recurring event | ✅ Pass |
+| `🔁 every 2 weeks` creates biweekly event | ✅ Pass |
+| `🔁 every monday, wednesday, friday` creates MWF schedule | ✅ Pass |
+| Modal generates correct recurrence syntax | ✅ Pass |
+| Safety Net ON: Calendar unchanged on completion | ✅ Pass |
+| Safety Net OFF: Modal appears with options | ✅ Pass |
+| "Keep Events" releases from tracking | ✅ Pass |
+| "Delete All Events" deletes series | ✅ Pass |
+| Recurrence stripped from event title | ✅ Pass |
+| Date picker works correctly | ✅ Pass |
+
+### Known Limitations
+
+| Limitation | Notes |
+|------------|-------|
+| `when done` patterns | Not supported (completion-triggered recurrence) |
+| `every month on the 15th` | Deferred to future |
+| Delete single instance | Requires Google exception API - deferred |
+| End date / count | Not implemented |
+
+### Git Commit Suggestion
+
+```
+feat: Recurring Events with modal UI and smart completion handling
+
+- Add recurrence parser for 🔁 syntax to Google RRULE conversion
+- Support: every day/week/month/year, intervals, weekdays
+- Add recurrence picker to date/time modal
+- Change date input to native date picker
+- Smart handling for completed recurring tasks:
+  - Safety Net ON: Release from tracking, keep calendar events
+  - Safety Net OFF: Show modal with delete/keep options
+- Store isRecurring flag in sync data for reliable detection
+- Add RecurringDeleteModal for completion choices
+```
+
+---
+
+## Session: January 9, 2026 - Custom Duration Feature COMPLETE
+
+### Feature Overview
+
+Custom Duration allows users to specify per-task event duration using the `⏱️` emoji syntax, overriding the default duration setting.
+
+### What Was Built
+
+| Component | Description |
+|-----------|-------------|
+| **Duration Parsing** | Parse `⏱️ 2h`, `⏱️ 30m`, `⏱️ 1h30m`, `⏱️ 45` formats |
+| **Task-Specific Duration** | Each task can have its own duration |
+| **Modal UI** | Custom duration toggle with hours/minutes inputs |
+| **CSS Styling** | Duration input styling matching reminder inputs |
+
+### Syntax Examples
+
+```markdown
+- [ ] Long meeting 📅 2026-01-15 ⏰ 14:00 ⏱️ 2h
+- [ ] Quick call 📅 2026-01-15 ⏰ 10:00 ⏱️ 15m
+- [ ] Workshop 📅 2026-01-15 ⏰ 09:00 ⏱️ 1h30m
+- [ ] Plain minutes 📅 2026-01-15 ⏰ 11:00 ⏱️ 45
+```
+
+### Files Modified
+
+| File | Changes |
+|------|---------|
+| `src/taskParser.ts` | Added DURATION_PATTERN, durationMinutes to ParseResult and ChronosTask, parsing logic |
+| `src/syncManager.ts` | Updated buildChangeSet() to use task.durationMinutes for all operation types |
+| `src/dateTimeModal.ts` | Added customDuration toggle, durationHours/durationMinutes inputs |
+| `main.ts` | Updated modal result handler to insert ⏱️ syntax |
+| `styles.css` | Added .chronos-duration-* styles |
+
+### Testing Results
+
+| Test | Result |
+|------|--------|
+| `⏱️ 2h` creates 2-hour event | ✅ Pass |
+| `⏱️ 30m` creates 30-minute event | ✅ Pass |
+| `⏱️ 1h30m` creates 90-minute event | ✅ Pass |
+| `⏱️ 45` creates 45-minute event | ✅ Pass |
+| Task without ⏱️ uses default duration | ✅ Pass |
+| Duration stripped from event title | ✅ Pass |
+| Modal inserts correct syntax | ✅ Pass |
 
 ---
 

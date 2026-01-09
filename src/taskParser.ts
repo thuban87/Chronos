@@ -1,4 +1,5 @@
 import { App, TFile } from 'obsidian';
+import { parseRecurrence } from './recurrenceParser';
 
 /**
  * Represents a parsed task that's eligible for calendar sync
@@ -30,6 +31,10 @@ export interface ChronosTask {
     reminderMinutes: number[] | null;
     /** Custom duration in minutes (null = use default) */
     durationMinutes: number | null;
+    /** Recurrence text (e.g., "every week") - null if not recurring */
+    recurrenceText: string | null;
+    /** Parsed RRULE for Google Calendar - null if not recurring or parse failed */
+    recurrenceRule: string | null;
 }
 
 /**
@@ -45,6 +50,7 @@ interface ParseResult {
     tags: string[];
     reminderMinutes: number[] | null;
     durationMinutes: number | null;
+    recurrenceText: string | null;
 }
 
 // Regex patterns for Tasks plugin format + Chronos additions
@@ -58,6 +64,9 @@ const TAG_PATTERN = /#[\w-]+/g;
 const REMINDER_PATTERN = /🔔\s*([\d,\s]+)/;
 // Duration pattern: ⏱️ followed by hours/minutes (e.g., ⏱️ 2h, ⏱️ 30m, ⏱️ 1h30m, ⏱️ 90)
 const DURATION_PATTERN = /⏱️\s*(?:(\d+)h)?(?:(\d+)m?)?/;
+// Recurrence pattern: 🔁 followed by recurrence text (e.g., 🔁 every week, 🔁 every 2 days)
+// Captures everything after 🔁 until we hit another emoji marker or end of line
+const RECURRENCE_PATTERN = /🔁\s*([^📅⏰🚫🔔⏱️✅⏫🔼🔽⏬➕🛫⏳#]+)/;
 
 // Patterns to strip from title
 const STRIP_PATTERNS = [
@@ -66,7 +75,7 @@ const STRIP_PATTERNS = [
     /🚫/g,                           // No-sync marker
     /✅\s*\d{4}-\d{2}-\d{2}/g,       // Completion date
     /⏫|🔼|🔽|⏬/g,                   // Priority markers
-    /🔁\s*[^\s📅⏰]*/g,              // Recurrence
+    /🔁\s*[^📅⏰🚫🔔⏱️✅⏫🔼🔽⏬➕🛫⏳#]+/g,  // Recurrence
     /➕\s*\d{4}-\d{2}-\d{2}/g,       // Created date
     /🛫\s*\d{4}-\d{2}-\d{2}/g,       // Start date
     /⏳\s*\d{4}-\d{2}-\d{2}/g,       // Scheduled date
@@ -96,6 +105,7 @@ export class TaskParser {
             tags: [],
             reminderMinutes: null,
             durationMinutes: null,
+            recurrenceText: null,
         };
 
         // Check if it's a task (checkbox)
@@ -145,6 +155,12 @@ export class TaskParser {
             if (totalMinutes > 0) {
                 result.durationMinutes = totalMinutes;
             }
+        }
+
+        // Extract recurrence (e.g., 🔁 every week or 🔁 every 2 days)
+        const recurrenceMatch = line.match(RECURRENCE_PATTERN);
+        if (recurrenceMatch) {
+            result.recurrenceText = recurrenceMatch[1].trim();
         }
 
         // Extract tags
@@ -253,6 +269,16 @@ export class TaskParser {
                 const datetime = this.parseDateTime(parsed.date, parsed.time);
 
                 if (datetime) {
+                    // Parse recurrence to RRULE if present
+                    let recurrenceRule: string | null = null;
+                    if (parsed.recurrenceText) {
+                        const recResult = parseRecurrence(parsed.recurrenceText);
+                        if (recResult.success && recResult.rrule) {
+                            recurrenceRule = recResult.rrule;
+                        }
+                        // If parse failed, recurrenceRule stays null - task syncs as non-recurring
+                    }
+
                     tasks.push({
                         rawText: line,
                         title: parsed.title,
@@ -267,6 +293,8 @@ export class TaskParser {
                         tags: parsed.tags,
                         reminderMinutes: parsed.reminderMinutes,
                         durationMinutes: parsed.durationMinutes,
+                        recurrenceText: parsed.recurrenceText,
+                        recurrenceRule: recurrenceRule,
                     });
                 }
             }

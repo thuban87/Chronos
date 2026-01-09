@@ -5,7 +5,8 @@ import { DateTimeModal } from './src/dateTimeModal';
 import { GoogleCalendarApi, GoogleCalendar, GoogleEvent } from './src/googleCalendar';
 import { SyncManager, ChronosSyncData, PendingOperation, SyncLogEntry, MultiCalendarSyncDiff, SyncedTaskInfo, PendingDeletion, DeletedEventRecord, PendingSeverance } from './src/syncManager';
 import { AgendaView, AGENDA_VIEW_TYPE, AgendaViewDeps } from './src/agendaView';
-import { BatchCalendarApi, ChangeSetOperation, BatchResult, DivertedDeletion } from './src/batchApi';
+import { BatchCalendarApi, ChangeSetOperation, BatchResult, DivertedDeletion, PendingRecurringCompletion, generateOperationId } from './src/batchApi';
+import { RecurringDeleteModal, RecurringDeleteChoice } from './src/recurringDeleteModal';
 import { DeletionReviewModal } from './src/deletionReviewModal';
 import { TaskRestoreModal } from './src/taskRestoreModal';
 import { FreshStartWarningModal } from './src/freshStartWarningModal';
@@ -141,6 +142,27 @@ export default class ChronosPlugin extends Plugin {
 						if (durationText !== '⏱️ ') {
 							text += ` ${durationText}`;
 						}
+					}
+					// Build recurrence text
+					if (result.recurrenceFrequency !== 'none') {
+						let recurrenceText = '🔁 every ';
+						if (result.recurrenceInterval > 1) {
+							recurrenceText += `${result.recurrenceInterval} `;
+						}
+						// For weekly with specific days
+						if (result.recurrenceFrequency === 'weekly' && result.recurrenceWeekdays.length > 0) {
+							recurrenceText += result.recurrenceWeekdays.join(', ');
+						} else {
+							// Simple frequency
+							const freqMap: Record<string, string> = {
+								'daily': result.recurrenceInterval > 1 ? 'days' : 'day',
+								'weekly': result.recurrenceInterval > 1 ? 'weeks' : 'week',
+								'monthly': result.recurrenceInterval > 1 ? 'months' : 'month',
+								'yearly': result.recurrenceInterval > 1 ? 'years' : 'year'
+							};
+							recurrenceText += freqMap[result.recurrenceFrequency] || result.recurrenceFrequency;
+						}
+						text += ` ${recurrenceText}`;
 					}
 					if (result.noSync) {
 						text += ' 🚫';
@@ -1038,6 +1060,60 @@ export default class ChronosPlugin extends Plugin {
 				this.updateStatusBar();
 			}
 
+			// Handle pending recurring completions (Safety Net OFF + recurring task completed)
+			if (changeSet.pendingRecurringCompletions.length > 0) {
+				for (const pending of changeSet.pendingRecurringCompletions) {
+					// Show modal for each recurring task completion
+					const choice = await this.showRecurringDeleteModal(pending.taskTitle);
+
+					if (choice) {
+						switch (choice) {
+							case 'deleteAll':
+								// Delete the entire series
+								changeSet.operations.push({
+									id: generateOperationId('delete'),
+									type: 'delete',
+									calendarId: pending.calendarId,
+									eventId: pending.eventId,
+								});
+								break;
+
+							case 'markComplete':
+								// Keep calendar events intact, just release from sync tracking
+								// This prevents breaking the recurring series
+								this.syncManager.removeSyncInfo(pending.taskId);
+								new Notice(`Released "${pending.taskTitle}" from sync. Calendar events kept.`);
+								break;
+
+							case 'deleteNext':
+								// For now, same as markComplete - release from tracking
+								// Single instance deletion requires complex Google Calendar exception handling
+								this.syncManager.removeSyncInfo(pending.taskId);
+								new Notice('Single instance deletion not yet supported. Calendar events kept.');
+								break;
+						}
+					} else {
+						// User cancelled - release from tracking anyway since task is completed
+						this.syncManager.removeSyncInfo(pending.taskId);
+					}
+				}
+				await this.saveSettings();
+			}
+
+			// Handle Safety Net ON recurring completions - release from tracking
+			// (These weren't added to pendingRecurringCompletions, but we need to clean up sync info)
+			if (this.settings.safeMode) {
+				for (const { task, syncInfo } of completedWithSync) {
+					// Check both current task AND stored sync info for recurrence
+					const isRecurring = !!task.recurrenceRule || !!syncInfo.isRecurring;
+					if (isRecurring) {
+						const taskId = this.syncManager.generateTaskId(task);
+						this.syncManager.removeSyncInfo(taskId);
+					}
+				}
+				await this.saveSettings();
+			}
+
 			// Counters for results
 			let created = 0;
 			let updated = 0;
@@ -1515,6 +1591,31 @@ export default class ChronosPlugin extends Plugin {
 		}
 
 		return result;
+	}
+
+	/**
+	 * Show the recurring delete modal and return the user's choice
+	 * Returns null if the user cancels
+	 */
+	private showRecurringDeleteModal(taskTitle: string): Promise<RecurringDeleteChoice | null> {
+		return new Promise((resolve) => {
+			const modal = new RecurringDeleteModal(
+				this.app,
+				taskTitle,
+				(result) => {
+					resolve(result.choice);
+				}
+			);
+
+			// Handle modal close without selection
+			const originalOnClose = modal.onClose.bind(modal);
+			modal.onClose = () => {
+				originalOnClose();
+				resolve(null);
+			};
+
+			modal.open();
+		});
 	}
 
 	/**
