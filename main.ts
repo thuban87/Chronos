@@ -13,6 +13,7 @@ import { FreshStartWarningModal } from './src/freshStartWarningModal';
 import { PowerUserWarningModal } from './src/powerUserWarningModal';
 import { EventRestoreModal } from './src/eventRestoreModal';
 import { SeveranceReviewModal } from './src/severanceReviewModal';
+import { ExclusionModal } from './src/exclusionModal';
 
 interface ChronosSettings {
 	googleClientId: string;
@@ -31,6 +32,8 @@ interface ChronosSettings {
 	strictTimeSync: boolean;  // Detect when Google event time differs from Obsidian task time
 	agendaCalendarIds: string[];  // Calendar IDs to display in agenda (empty = none selected)
 	agendaImportFormat: 'list' | 'table' | 'simple';  // Format for importing agenda to file
+	excludedFolders: string[];  // Folders to exclude from sync (e.g., "Templates", "Archive")
+	excludedFiles: string[];  // Specific files to exclude from sync (e.g., "Tasks/reference.md")
 }
 
 interface ChronosData {
@@ -56,6 +59,8 @@ const DEFAULT_SETTINGS: ChronosSettings = {
 	strictTimeSync: false,  // Default: don't check for time drift
 	agendaCalendarIds: [],  // Empty = no calendars selected for agenda
 	agendaImportFormat: 'list',  // Default to list format
+	excludedFolders: [],  // No folders excluded by default
+	excludedFiles: [],  // No files excluded by default
 };
 
 export default class ChronosPlugin extends Plugin {
@@ -960,8 +965,12 @@ export default class ChronosPlugin extends Plugin {
 			// First, retry any pending operations from previous failures
 			const retryResult = await this.retryPendingOperations();
 
-			// Scan for ALL tasks including completed ones
-			const allTasks = await this.taskParser.scanVault(true);
+			// Scan for ALL tasks including completed ones (respecting exclusions)
+			const allTasks = await this.taskParser.scanVault(
+				true,
+				this.settings.excludedFolders,
+				this.settings.excludedFiles
+			);
 
 			// Separate uncompleted and completed tasks
 			const uncompletedTasks = allTasks.filter(t => !t.isCompleted);
@@ -2432,6 +2441,141 @@ class ChronosSettingTab extends PluginSettingTab {
 					});
 				});
 
+			// Exclusion Rules Section
+			containerEl.createEl('h3', { text: 'Exclusion Rules' });
+
+			const exclusionDesc = containerEl.createEl('p', { cls: 'chronos-exclusion-desc' });
+			exclusionDesc.textContent = 'Exclude folders or files from calendar sync. Tasks in excluded locations will be ignored even if they have dates.';
+
+			// Excluded Folders
+			new Setting(containerEl)
+				.setName('Excluded folders')
+				.setDesc('Folders to exclude from sync (including subfolders)');
+
+			const folderListContainer = containerEl.createDiv({ cls: 'chronos-exclusion-list' });
+			this.renderExcludedFolders(folderListContainer);
+
+			// Add folder input with autocomplete
+			const addFolderContainer = containerEl.createDiv({ cls: 'chronos-add-exclusion' });
+			const folderSuggester = this.createFolderSuggester(addFolderContainer);
+			const addFolderBtn = addFolderContainer.createEl('button', {
+				text: 'Add Folder',
+				cls: 'chronos-add-exclusion-btn'
+			});
+
+			addFolderBtn.addEventListener('click', async () => {
+				let folder = folderSuggester.getValue().trim();
+				if (!folder) {
+					return;
+				}
+				// Normalize: remove leading/trailing slashes
+				folder = folder.replace(/^\/+|\/+$/g, '');
+				// Prevent adding root
+				if (folder === '' || folder === '/') {
+					new Notice('Cannot exclude root folder');
+					return;
+				}
+				if (this.plugin.settings.excludedFolders.includes(folder)) {
+					new Notice('Folder already excluded');
+					return;
+				}
+
+				// Check for synced tasks in this folder
+				const affectedTasks = this.getAffectedSyncedTasks(folder, true);
+				if (affectedTasks.length > 0) {
+					new ExclusionModal(
+						this.app,
+						folder,
+						true,
+						affectedTasks.length,
+						async (result) => {
+							if (result.action === 'cancel') {
+								return;
+							}
+							// Add the exclusion
+							this.plugin.settings.excludedFolders.push(folder);
+							await this.plugin.saveSettings();
+							folderSuggester.clear();
+							this.renderExcludedFolders(folderListContainer);
+
+							if (result.action === 'delete') {
+								await this.deleteEventsForExcludedTasks(affectedTasks);
+							} else {
+								// 'keep' - just sever the sync relationship
+								this.severSyncForTasks(affectedTasks);
+							}
+						}
+					).open();
+				} else {
+					this.plugin.settings.excludedFolders.push(folder);
+					await this.plugin.saveSettings();
+					folderSuggester.clear();
+					this.renderExcludedFolders(folderListContainer);
+				}
+			});
+
+			// Excluded Files
+			new Setting(containerEl)
+				.setName('Excluded files')
+				.setDesc('Specific files to exclude from sync');
+
+			const fileListContainer = containerEl.createDiv({ cls: 'chronos-exclusion-list' });
+			this.renderExcludedFiles(fileListContainer);
+
+			// Add file input with autocomplete
+			const addFileContainer = containerEl.createDiv({ cls: 'chronos-add-exclusion' });
+			const fileSuggester = this.createFileSuggester(addFileContainer);
+			const addFileBtn = addFileContainer.createEl('button', {
+				text: 'Add File',
+				cls: 'chronos-add-exclusion-btn'
+			});
+
+			addFileBtn.addEventListener('click', async () => {
+				let file = fileSuggester.getValue().trim();
+				if (!file) {
+					return;
+				}
+				// Normalize: remove leading slash
+				file = file.replace(/^\/+/, '');
+				if (this.plugin.settings.excludedFiles.includes(file)) {
+					new Notice('File already excluded');
+					return;
+				}
+
+				// Check for synced tasks in this file
+				const affectedTasks = this.getAffectedSyncedTasks(file, false);
+				if (affectedTasks.length > 0) {
+					new ExclusionModal(
+						this.app,
+						file,
+						false,
+						affectedTasks.length,
+						async (result) => {
+							if (result.action === 'cancel') {
+								return;
+							}
+							// Add the exclusion
+							this.plugin.settings.excludedFiles.push(file);
+							await this.plugin.saveSettings();
+							fileSuggester.clear();
+							this.renderExcludedFiles(fileListContainer);
+
+							if (result.action === 'delete') {
+								await this.deleteEventsForExcludedTasks(affectedTasks);
+							} else {
+								// 'keep' - just sever the sync relationship
+								this.severSyncForTasks(affectedTasks);
+							}
+						}
+					).open();
+				} else {
+					this.plugin.settings.excludedFiles.push(file);
+					await this.plugin.saveSettings();
+					fileSuggester.clear();
+					this.renderExcludedFiles(fileListContainer);
+				}
+			});
+
 			// Agenda View Section
 			containerEl.createEl('h3', { text: 'Agenda View' });
 
@@ -2905,6 +3049,346 @@ class ChronosSettingTab extends PluginSettingTab {
 	}
 
 	/**
+	 * Render the excluded folders list
+	 */
+	private renderExcludedFolders(container: HTMLElement): void {
+		container.empty();
+
+		const folders = this.plugin.settings.excludedFolders;
+
+		if (folders.length === 0) {
+			container.createEl('p', {
+				text: 'No folders excluded',
+				cls: 'chronos-exclusion-empty'
+			});
+			return;
+		}
+
+		for (const folder of folders) {
+			const row = container.createDiv({ cls: 'chronos-exclusion-row' });
+			row.createSpan({ text: `📁 ${folder}`, cls: 'chronos-exclusion-path' });
+
+			const removeBtn = row.createEl('button', {
+				text: '×',
+				cls: 'chronos-exclusion-remove'
+			});
+			removeBtn.addEventListener('click', async () => {
+				this.plugin.settings.excludedFolders =
+					this.plugin.settings.excludedFolders.filter(f => f !== folder);
+				await this.plugin.saveSettings();
+				this.renderExcludedFolders(container);
+			});
+		}
+	}
+
+	/**
+	 * Render the excluded files list
+	 */
+	private renderExcludedFiles(container: HTMLElement): void {
+		container.empty();
+
+		const files = this.plugin.settings.excludedFiles;
+
+		if (files.length === 0) {
+			container.createEl('p', {
+				text: 'No files excluded',
+				cls: 'chronos-exclusion-empty'
+			});
+			return;
+		}
+
+		for (const file of files) {
+			const row = container.createDiv({ cls: 'chronos-exclusion-row' });
+			row.createSpan({ text: `📄 ${file}`, cls: 'chronos-exclusion-path' });
+
+			const removeBtn = row.createEl('button', {
+				text: '×',
+				cls: 'chronos-exclusion-remove'
+			});
+			removeBtn.addEventListener('click', async () => {
+				this.plugin.settings.excludedFiles =
+					this.plugin.settings.excludedFiles.filter(f => f !== file);
+				await this.plugin.saveSettings();
+				this.renderExcludedFiles(container);
+			});
+		}
+	}
+
+	/**
+	 * Create a folder suggester input with autocomplete
+	 */
+	private createFolderSuggester(container: HTMLElement): { getValue: () => string; clear: () => void } {
+		const wrapper = container.createDiv({ cls: 'chronos-suggester-container' });
+		const input = wrapper.createEl('input', {
+			type: 'text',
+			placeholder: 'Start typing folder name...',
+			cls: 'chronos-suggester-input'
+		});
+
+		let dropdown: HTMLElement | null = null;
+		let selectedIndex = -1;
+
+		const getFolders = (): string[] => {
+			const folders: string[] = [];
+			const files = this.app.vault.getAllLoadedFiles();
+			for (const file of files) {
+				if ('children' in file) {
+					// It's a folder
+					folders.push(file.path);
+				}
+			}
+			return folders.sort();
+		};
+
+		const showDropdown = (matches: string[]) => {
+			hideDropdown();
+			if (matches.length === 0) return;
+
+			dropdown = wrapper.createDiv({ cls: 'chronos-suggester-dropdown' });
+			selectedIndex = -1;
+
+			for (let i = 0; i < Math.min(matches.length, 10); i++) {
+				const item = dropdown.createDiv({ cls: 'chronos-suggester-item' });
+				item.createSpan({ text: '📁' });
+				item.createSpan({ text: matches[i] });
+				item.addEventListener('click', () => {
+					input.value = matches[i];
+					hideDropdown();
+				});
+				item.addEventListener('mouseenter', () => {
+					updateSelection(i);
+				});
+			}
+		};
+
+		const hideDropdown = () => {
+			if (dropdown) {
+				dropdown.remove();
+				dropdown = null;
+				selectedIndex = -1;
+			}
+		};
+
+		const updateSelection = (index: number) => {
+			if (!dropdown) return;
+			const items = dropdown.querySelectorAll('.chronos-suggester-item');
+			items.forEach((item, i) => {
+				item.toggleClass('is-selected', i === index);
+			});
+			selectedIndex = index;
+		};
+
+		input.addEventListener('input', () => {
+			const query = input.value.toLowerCase();
+			if (query.length === 0) {
+				hideDropdown();
+				return;
+			}
+			const folders = getFolders();
+			const matches = folders.filter(f => f.toLowerCase().includes(query));
+			showDropdown(matches);
+		});
+
+		input.addEventListener('keydown', (e) => {
+			if (!dropdown) return;
+			const items = dropdown.querySelectorAll('.chronos-suggester-item');
+
+			if (e.key === 'ArrowDown') {
+				e.preventDefault();
+				updateSelection(Math.min(selectedIndex + 1, items.length - 1));
+			} else if (e.key === 'ArrowUp') {
+				e.preventDefault();
+				updateSelection(Math.max(selectedIndex - 1, 0));
+			} else if (e.key === 'Enter' && selectedIndex >= 0) {
+				e.preventDefault();
+				const folders = getFolders().filter(f => f.toLowerCase().includes(input.value.toLowerCase()));
+				if (folders[selectedIndex]) {
+					input.value = folders[selectedIndex];
+					hideDropdown();
+				}
+			} else if (e.key === 'Escape') {
+				hideDropdown();
+			}
+		});
+
+		input.addEventListener('blur', () => {
+			// Delay to allow click events on dropdown items
+			setTimeout(hideDropdown, 150);
+		});
+
+		return {
+			getValue: () => input.value,
+			clear: () => { input.value = ''; hideDropdown(); }
+		};
+	}
+
+	/**
+	 * Create a file suggester input with autocomplete
+	 */
+	private createFileSuggester(container: HTMLElement): { getValue: () => string; clear: () => void } {
+		const wrapper = container.createDiv({ cls: 'chronos-suggester-container' });
+		const input = wrapper.createEl('input', {
+			type: 'text',
+			placeholder: 'Start typing file name...',
+			cls: 'chronos-suggester-input'
+		});
+
+		let dropdown: HTMLElement | null = null;
+		let selectedIndex = -1;
+
+		const getFiles = (): string[] => {
+			return this.app.vault.getMarkdownFiles().map(f => f.path).sort();
+		};
+
+		const showDropdown = (matches: string[]) => {
+			hideDropdown();
+			if (matches.length === 0) return;
+
+			dropdown = wrapper.createDiv({ cls: 'chronos-suggester-dropdown' });
+			selectedIndex = -1;
+
+			for (let i = 0; i < Math.min(matches.length, 10); i++) {
+				const item = dropdown.createDiv({ cls: 'chronos-suggester-item' });
+				item.createSpan({ text: '📄' });
+				item.createSpan({ text: matches[i] });
+				item.addEventListener('click', () => {
+					input.value = matches[i];
+					hideDropdown();
+				});
+				item.addEventListener('mouseenter', () => {
+					updateSelection(i);
+				});
+			}
+		};
+
+		const hideDropdown = () => {
+			if (dropdown) {
+				dropdown.remove();
+				dropdown = null;
+				selectedIndex = -1;
+			}
+		};
+
+		const updateSelection = (index: number) => {
+			if (!dropdown) return;
+			const items = dropdown.querySelectorAll('.chronos-suggester-item');
+			items.forEach((item, i) => {
+				item.toggleClass('is-selected', i === index);
+			});
+			selectedIndex = index;
+		};
+
+		input.addEventListener('input', () => {
+			const query = input.value.toLowerCase();
+			if (query.length === 0) {
+				hideDropdown();
+				return;
+			}
+			const files = getFiles();
+			const matches = files.filter(f => f.toLowerCase().includes(query));
+			showDropdown(matches);
+		});
+
+		input.addEventListener('keydown', (e) => {
+			if (!dropdown) return;
+			const items = dropdown.querySelectorAll('.chronos-suggester-item');
+
+			if (e.key === 'ArrowDown') {
+				e.preventDefault();
+				updateSelection(Math.min(selectedIndex + 1, items.length - 1));
+			} else if (e.key === 'ArrowUp') {
+				e.preventDefault();
+				updateSelection(Math.max(selectedIndex - 1, 0));
+			} else if (e.key === 'Enter' && selectedIndex >= 0) {
+				e.preventDefault();
+				const files = getFiles().filter(f => f.toLowerCase().includes(input.value.toLowerCase()));
+				if (files[selectedIndex]) {
+					input.value = files[selectedIndex];
+					hideDropdown();
+				}
+			} else if (e.key === 'Escape') {
+				hideDropdown();
+			}
+		});
+
+		input.addEventListener('blur', () => {
+			// Delay to allow click events on dropdown items
+			setTimeout(hideDropdown, 150);
+		});
+
+		return {
+			getValue: () => input.value,
+			clear: () => { input.value = ''; hideDropdown(); }
+		};
+	}
+
+	/**
+	 * Get synced tasks that would be affected by an exclusion
+	 */
+	private getAffectedSyncedTasks(path: string, isFolder: boolean): SyncedTaskInfo[] {
+		const syncedTasks = this.plugin.syncManager.getSyncData().syncedTasks;
+		const affected: SyncedTaskInfo[] = [];
+
+		const normalizedPath = path.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+
+		for (const taskInfo of Object.values(syncedTasks)) {
+			const taskPath = taskInfo.filePath.replace(/\\/g, '/');
+
+			if (isFolder) {
+				// Check if task's file is in this folder
+				if (taskPath.startsWith(normalizedPath + '/')) {
+					affected.push(taskInfo);
+				}
+			} else {
+				// Check if task's file matches exactly
+				if (taskPath === normalizedPath) {
+					affected.push(taskInfo);
+				}
+			}
+		}
+
+		return affected;
+	}
+
+	/**
+	 * Delete Google Calendar events for excluded tasks
+	 */
+	private async deleteEventsForExcludedTasks(tasks: SyncedTaskInfo[]): Promise<void> {
+		let deleted = 0;
+		let failed = 0;
+
+		for (const task of tasks) {
+			try {
+				await this.plugin.calendarApi.deleteEvent(task.calendarId, task.eventId);
+				this.plugin.syncManager.removeSyncInfo(task.taskId);
+				deleted++;
+			} catch (error) {
+				console.error(`Chronos: Failed to delete event for excluded task:`, error);
+				failed++;
+			}
+		}
+
+		if (deleted > 0) {
+			new Notice(`Deleted ${deleted} event${deleted === 1 ? '' : 's'} from Google Calendar`);
+		}
+		if (failed > 0) {
+			new Notice(`Failed to delete ${failed} event${failed === 1 ? '' : 's'}`);
+		}
+	}
+
+	/**
+	 * Remove sync tracking for tasks without deleting their events
+	 */
+	private severSyncForTasks(tasks: SyncedTaskInfo[]): void {
+		for (const task of tasks) {
+			this.plugin.syncManager.removeSyncInfo(task.taskId);
+		}
+		if (tasks.length > 0) {
+			new Notice(`Stopped tracking ${tasks.length} task${tasks.length === 1 ? '' : 's'} (events kept in calendar)`);
+		}
+	}
+
+	/**
 	 * Get a detailed description for the current routing mode
 	 */
 	private getRoutingModeDescription(mode: 'preserve' | 'keepBoth' | 'freshStart'): string {
@@ -3055,8 +3539,12 @@ class TaskListModal extends Modal {
 
 		contentEl.createEl('h2', { text: 'Chronos Task Overview' });
 
-		// Scan all tasks
-		const allTasks = await this.plugin.taskParser.scanVault(true);
+		// Scan all tasks (respecting exclusions)
+		const allTasks = await this.plugin.taskParser.scanVault(
+			true,
+			this.plugin.settings.excludedFolders,
+			this.plugin.settings.excludedFiles
+		);
 
 		// Separate into categories
 		this.unsyncedTasks = [];

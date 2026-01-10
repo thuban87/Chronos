@@ -1,9 +1,62 @@
 # Chronos Handoff Log
 
 **Last Updated:** January 9, 2026
-**Current Phase:** Multi-Calendar Agenda & Import COMPLETE
-**Current Branch:** feature/multi-calendar-agenda
+**Current Phase:** Exclusion Rules COMPLETE
+**Current Branch:** feature/exclusion-rules
 **Version:** 0.1.0
+
+---
+
+## Session: January 9, 2026 - Exclusion Rules (Rules Manager)
+
+### Feature Overview
+
+Allow users to exclude folders and files from sync via settings, solving the case where users have files full of dated tasks they never want synced (templates, archives, reference notes).
+
+### What Was Built
+
+| Component | Description |
+|-----------|-------------|
+| **Excluded Folders** | Settings UI to add folders (excludes all subfolders) |
+| **Excluded Files** | Settings UI to add specific files |
+| **Folder Autocomplete** | Type-ahead suggester showing vault folders |
+| **File Autocomplete** | Type-ahead suggester showing markdown files |
+| **Synced Task Modal** | Shown when excluding locations with already-synced tasks |
+| **Keep/Delete Options** | User chooses to keep events in calendar or delete them |
+| **Path Normalization** | Handles spaces, slashes, Windows/Unix path differences |
+
+### Settings Added
+
+| Setting | Description |
+|---------|-------------|
+| `excludedFolders` | Array of folder paths to exclude from sync |
+| `excludedFiles` | Array of file paths to exclude from sync |
+
+### Key Design Decisions
+
+| Decision | Choice | Rationale |
+|----------|--------|-----------|
+| Path matching | Normalized comparison | Handles spaces, different slash styles |
+| Already-synced tasks | Modal with options | User decides: keep or delete events |
+| Autocomplete | Custom suggester | Easier than typing full paths |
+| Folder exclusion | Includes subfolders | Matches user expectation |
+
+### Files Modified/Created
+
+| File | Changes |
+|------|---------|
+| `main.ts` | Settings fields, exclusion UI, suggesters, modal handling |
+| `src/taskParser.ts` | `isExcludedByFolder()`, `isExcludedByFile()`, `normalizePath()` |
+| `src/exclusionModal.ts` | **NEW** - Modal for Keep/Delete choice |
+| `styles.css` | Exclusion list, suggester dropdown, modal styles |
+
+### Testing Verified
+
+- Folder exclusion with/without spaces ✓
+- File exclusion with/without spaces ✓
+- Nested folder exclusion ✓
+- Autocomplete for both folders and files ✓
+- Modal appears for already-synced tasks ✓
 
 ---
 
@@ -690,12 +743,12 @@ Polished Phase 9 features with improved UX. Added custom reminders UI to the dat
 ## Next Session Prompt
 
 ```
-Chronos - Multi-Calendar Agenda & Import COMPLETE
+Chronos - Exclusion Rules COMPLETE
 
 **Directory:** C:\Users\bwales\projects\obsidian-plugins\Chronos
 **Deploy to:** G:\My Drive\IT\Obsidian Vault\My Notebooks\.obsidian\plugins\chronos\
 **GitHub:** https://github.com/thuban87/Chronos (public)
-**Current branch:** feature/multi-calendar-agenda
+**Current branch:** feature/exclusion-rules
 **Version:** 0.1.0
 
 **IMPORTANT: Read docs\Handoff Log.md and docs\ADR Priority List - Chronos.md first**
@@ -704,12 +757,12 @@ Chronos - Multi-Calendar Agenda & Import COMPLETE
 
 ## Context
 
-Multi-Calendar Agenda & Event Import is COMPLETE:
-- Agenda sidebar can show events from multiple calendars
-- Calendar selection checkboxes in settings
-- Color dots show which calendar each event is from
-- Import command and button to insert agenda into notes
-- Three import formats: list (links), table, simple (no links)
+Exclusion Rules is COMPLETE:
+- Exclude folders/files from sync via settings
+- Autocomplete for folder/file path entry
+- Modal when excluding locations with synced tasks
+- User chooses: keep events in calendar or delete them
+- Path normalization handles spaces and different slash styles
 
 ---
 
@@ -721,15 +774,16 @@ Multi-Calendar Agenda & Event Import is COMPLETE:
 - Robust task reconciliation (renames, rescheduling, moves all work)
 - Preserves user-edited event data (description, location, attendees)
 - Custom per-task reminders (🔔 syntax)
-- **Multi-calendar agenda sidebar** (NEW)
-- **Event import to file** (NEW)
+- Custom duration with ⏱️ syntax
+- Recurring events with 🔁 syntax
+- Multi-calendar agenda sidebar
+- Event import to file (list/table/simple formats)
+- **Folder/file exclusion rules** (NEW)
 - Sync history with batched logs
 - Batch API for fast syncing
 - Smart retry on server errors
 - Safety Net deletion protection
 - External Event Handling (moved/deleted events in Google Calendar)
-- Recurring events with 🔁 syntax
-- Custom duration with ⏱️ syntax
 
 ---
 
