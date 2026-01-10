@@ -2,7 +2,7 @@
 
 **Last Updated:** January 9, 2026
 **Version:** 0.1.0
-**Status:** Active Development - Phase 12 Complete (External Event Handling)
+**Status:** Active Development - Phase 16 Complete (Exclusion Rules)
 
 ---
 
@@ -319,6 +319,90 @@ Each user creates their own Google Cloud project and provides their own Client I
 
 ---
 
+## Phase 13: Custom Duration - COMPLETE ✓
+
+**Goal:** Allow per-task custom durations.
+
+| Order | Feature | Status | Notes |
+|-------|---------|--------|-------|
+| 77 | Duration parsing (`⏱️`) | ✓ Complete | Supports hours/minutes (⏱️ 2h, ⏱️ 30m, ⏱️ 1h30m) |
+| 78 | Duration in date/time modal | ✓ Complete | Optional duration field in modal UI |
+| 79 | Duration passed to calendar API | ✓ Complete | Creates events with correct end time |
+
+**Phase 13 Deliverable:** Users can set custom durations per-task with ⏱️ syntax. ✓
+
+---
+
+## Phase 14: Recurring Events - COMPLETE ✓
+
+**Goal:** Support recurring calendar events using Tasks plugin 🔁 syntax.
+
+| Order | Feature | Status | Notes |
+|-------|---------|--------|-------|
+| 80 | Recurrence parser | ✓ Complete | `src/recurrenceParser.ts` - Converts 🔁 to RRULE |
+| 81 | RRULE integration | ✓ Complete | Pass recurrence rule to Google Calendar API |
+| 82 | Modal UI for recurrence | ✓ Complete | Frequency, interval, weekday selector |
+| 83 | Recurring delete modal | ✓ Complete | Options for completed recurring tasks |
+| 84 | Smart completion handling | ✓ Complete | Different behavior for Safety Net ON vs OFF |
+| 85 | Sync info tracking | ✓ Complete | `isRecurring` flag in sync data |
+
+**Supported Patterns:**
+- Simple: `every day`, `every week`, `every month`, `every year`
+- With interval: `every 2 days`, `every 3 weeks`
+- Weekdays: `every monday`, `every monday, wednesday, friday`
+
+**Phase 14 Deliverable:** Recurring events work with 🔁 syntax and handle completion gracefully. ✓
+
+---
+
+## Phase 15: Multi-Calendar Agenda & Import - COMPLETE ✓
+
+**Goal:** Show events from multiple calendars in agenda and import to notes.
+
+| Order | Feature | Status | Notes |
+|-------|---------|--------|-------|
+| 86 | Agenda calendar selection | ✓ Complete | Checkbox UI in settings for each calendar |
+| 87 | Multi-calendar fetch | ✓ Complete | Fetches events from all selected calendars |
+| 88 | Calendar color dots | ✓ Complete | Each event shows source calendar color |
+| 89 | Import command | ✓ Complete | "Import agenda to current file" command |
+| 90 | Import button in sidebar | ✓ Complete | 📋 button for quick import |
+| 91 | Import format options | ✓ Complete | List, Table, Simple (no links) |
+
+**Key Features:**
+- Select/deselect any calendar (including default)
+- Color dots distinguish calendar sources
+- Calendar name shown on hover
+- Import uses agenda's current date
+- Three import formats with setting
+
+**Phase 15 Deliverable:** Agenda shows all selected calendars with easy import to notes. ✓
+
+---
+
+## Phase 16: Exclusion Rules - COMPLETE ✓
+
+**Goal:** Allow users to exclude folders/files from sync.
+
+| Order | Feature | Status | Notes |
+|-------|---------|--------|-------|
+| 92 | Exclusion settings | ✓ Complete | `excludedFolders` and `excludedFiles` arrays |
+| 93 | Folder exclusion logic | ✓ Complete | Excludes folder and all subfolders |
+| 94 | File exclusion logic | ✓ Complete | Excludes specific files with path normalization |
+| 95 | Autocomplete inputs | ✓ Complete | Folder/file suggesters with dropdown |
+| 96 | Synced task modal | ✓ Complete | Asks Keep/Delete when excluding synced tasks |
+| 97 | Path normalization | ✓ Complete | Handles spaces, slashes, case differences |
+
+**Key Features:**
+- Folder exclusion includes all subfolders
+- Autocomplete for easy path entry
+- Modal when excluding already-synced tasks
+- Options: Keep events in calendar or delete them
+- Works with paths containing spaces
+
+**Phase 16 Deliverable:** Users can exclude folders/files from sync with full control over existing events. ✓
+
+---
+
 ## Maybe Someday (Post-BRAT)
 
 Features that are valuable but complex or low priority. May implement based on user demand.
@@ -327,8 +411,10 @@ Features that are valuable but complex or low priority. May implement based on u
 |---------|-------|------------|-------|
 | Two-way sync (Calendar → Obsidian) | High | High | Major feature, needs conflict resolution, refactoring |
 | EditorSuggest `@cal` trigger | Medium | Medium | Type-to-insert; hotkey modal works well enough |
-| Recurring event support | Medium | High | Parse `🔁` from Tasks plugin |
+| ~~Recurring event support~~ | ~~Medium~~ | ~~High~~ | ✓ Completed in Phase 14 |
 | Calendar event colors | Low | Low | Color by tag or priority |
+| Glob pattern exclusions | Low | Medium | Support `*.template.md` or `Archive/**` patterns |
+| Include-only mode | Low | Medium | Only sync from specific folders (inverse of exclusions) |
 
 ---
 

@@ -214,12 +214,30 @@ export class TaskParser {
      * - Time (⏰) is optional - without it, creates all-day event
      *
      * Uses metadataCache to skip files without tasks (performance optimization)
+     *
+     * @param includeCompleted Whether to include completed tasks
+     * @param excludedFolders Folders to skip (e.g., ["Templates", "Archive"])
+     * @param excludedFiles Specific files to skip (e.g., ["Tasks/reference.md"])
      */
-    async scanVault(includeCompleted: boolean = false): Promise<ChronosTask[]> {
+    async scanVault(
+        includeCompleted: boolean = false,
+        excludedFolders: string[] = [],
+        excludedFiles: string[] = []
+    ): Promise<ChronosTask[]> {
         const tasks: ChronosTask[] = [];
         const markdownFiles = this.app.vault.getMarkdownFiles();
 
         for (const file of markdownFiles) {
+            // Check folder exclusions
+            if (this.isExcludedByFolder(file.path, excludedFolders)) {
+                continue;
+            }
+
+            // Check file exclusions
+            if (this.isExcludedByFile(file.path, excludedFiles)) {
+                continue;
+            }
+
             // Quick check: skip files that don't have any tasks
             if (!this.fileHasTasks(file)) {
                 continue;
@@ -247,6 +265,54 @@ export class TaskParser {
         });
 
         return tasks;
+    }
+
+    /**
+     * Check if a file path is within an excluded folder
+     */
+    private isExcludedByFolder(filePath: string, excludedFolders: string[]): boolean {
+        // Normalize the file path for comparison
+        const normalizedFilePath = this.normalizePath(filePath);
+
+        for (const folder of excludedFolders) {
+            // Normalize folder path
+            const normalizedFolder = this.normalizePath(folder);
+
+            // Check if file is in this folder or a subfolder
+            if (normalizedFilePath.startsWith(normalizedFolder + '/')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Check if a file path matches an excluded file
+     */
+    private isExcludedByFile(filePath: string, excludedFiles: string[]): boolean {
+        // Normalize the file path for comparison
+        const normalizedFilePath = this.normalizePath(filePath);
+
+        for (const excludedFile of excludedFiles) {
+            const normalizedExcluded = this.normalizePath(excludedFile);
+            if (normalizedFilePath === normalizedExcluded) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Normalize a path for consistent comparison
+     * - Convert backslashes to forward slashes
+     * - Remove leading/trailing slashes
+     * - Trim whitespace
+     */
+    private normalizePath(path: string): string {
+        return path
+            .trim()
+            .replace(/\\/g, '/')  // Backslashes to forward slashes
+            .replace(/^\/+|\/+$/g, '');  // Remove leading/trailing slashes
     }
 
     /**
