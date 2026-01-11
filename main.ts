@@ -14,6 +14,12 @@ import { PowerUserWarningModal } from './src/powerUserWarningModal';
 import { EventRestoreModal } from './src/eventRestoreModal';
 import { SeveranceReviewModal } from './src/severanceReviewModal';
 import { ExclusionModal } from './src/exclusionModal';
+import { ChronosEvents, ChronosEventPayloads, AgendaTaskEvent } from './src/events';
+
+// Re-export types for other plugins to use
+export { ChronosEvents, ChronosEventPayloads, AgendaTaskEvent } from './src/events';
+export { ChronosTask } from './src/taskParser';
+export { SyncedTaskInfo } from './src/syncManager';
 
 interface ChronosSettings {
 	googleClientId: string;
@@ -78,6 +84,16 @@ export default class ChronosPlugin extends Plugin {
 	pendingRerouteFailures: { task: ChronosTask; oldCalendarId: string; newCalendarId: string; error: string }[] = [];
 	private calendarNameCache: Map<string, string> = new Map();
 
+	/**
+	 * Event emitter for inter-plugin communication
+	 * Other plugins can subscribe to Chronos events:
+	 * ```typescript
+	 * const chronos = app.plugins.plugins['chronos'];
+	 * chronos.events.on('task-created', (payload) => { ... });
+	 * ```
+	 */
+	events: ChronosEvents = new ChronosEvents();
+
 	async onload() {
 		await this.loadSettings();
 		this.googleAuth = new GoogleAuth(this.getAuthCredentials());
@@ -112,6 +128,16 @@ export default class ChronosPlugin extends Plugin {
 						}
 					}
 					return null;
+				},
+				// Event emitter callbacks for inter-plugin communication
+				onAgendaRefresh: (date, events) => {
+					this.events.emit('agenda-refresh', { date, events });
+				},
+				onTaskStartingSoon: (task, minutesUntilStart) => {
+					this.events.emit('task-starting-soon', { task, minutesUntilStart });
+				},
+				onTaskNow: (task) => {
+					this.events.emit('task-now', { task });
 				},
 			};
 			const view = new AgendaView(leaf, deps);
@@ -958,6 +984,9 @@ export default class ChronosPlugin extends Plugin {
 
 		if (!silent) new Notice('Chronos: Syncing tasks...');
 
+		// Emit sync-start event for other plugins
+		this.events.emit('sync-start', { timestamp: new Date() });
+
 		try {
 			// Generate a batch ID for this sync run
 			const batchId = this.syncManager.generateBatchId();
@@ -1248,6 +1277,12 @@ export default class ChronosPlugin extends Plugin {
 									if (op.task && result.body?.id) {
 										this.syncManager.recordSync(op.task, result.body.id, op.calendarId);
 										created++;
+										// Emit task-created event
+										this.events.emit('task-created', {
+											task: op.task,
+											eventId: result.body.id,
+											calendarId: op.calendarId,
+										});
 									}
 									this.logOperationFromBatch(op, true, undefined, batchId);
 									break;
@@ -1256,6 +1291,12 @@ export default class ChronosPlugin extends Plugin {
 									if (op.task) {
 										this.syncManager.recordSync(op.task, op.eventId!, op.calendarId);
 										updated++;
+										// Emit task-updated event
+										this.events.emit('task-updated', {
+											task: op.task,
+											eventId: op.eventId!,
+											calendarId: op.calendarId,
+										});
 									}
 									this.logOperationFromBatch(op, true, undefined, batchId);
 									break;
@@ -1265,6 +1306,13 @@ export default class ChronosPlugin extends Plugin {
 									if (op.task) {
 										const taskId = this.syncManager.generateTaskId(op.task);
 										this.syncManager.removeSync(taskId);
+										// Emit task-deleted event
+										this.events.emit('task-deleted', {
+											taskId,
+											eventId: op.eventId!,
+											calendarId: op.calendarId,
+											title: op.task.title,
+										});
 									} else {
 										// Orphaned deletion - find by eventId
 										const orphanId = diff.orphaned.find(id => {
@@ -1273,6 +1321,14 @@ export default class ChronosPlugin extends Plugin {
 										});
 										if (orphanId) {
 											this.syncManager.removeSync(orphanId);
+											// Emit task-deleted event for orphan
+											const orphanInfo = this.syncManager.getSyncInfo(orphanId);
+											this.events.emit('task-deleted', {
+												taskId: orphanId,
+												eventId: op.eventId!,
+												calendarId: op.calendarId,
+												title: orphanInfo?.title || 'Unknown',
+											});
 										}
 									}
 									deleted++;
@@ -1283,6 +1339,12 @@ export default class ChronosPlugin extends Plugin {
 									if (op.task && result.body?.id) {
 										this.syncManager.recordSync(op.task, result.body.id, op.destinationCalendarId!);
 										rerouted++;
+										// Emit task-updated event for moves (calendar changed)
+										this.events.emit('task-updated', {
+											task: op.task,
+											eventId: result.body.id,
+											calendarId: op.destinationCalendarId!,
+										});
 									}
 									this.logOperationFromBatch(op, true, undefined, batchId);
 									break;
@@ -1292,6 +1354,12 @@ export default class ChronosPlugin extends Plugin {
 										const taskId = this.syncManager.generateTaskId(op.task);
 										this.syncManager.removeSync(taskId);
 										completed++;
+										// Emit task-completed event
+										this.events.emit('task-completed', {
+											task: op.task,
+											eventId: op.eventId!,
+											calendarId: op.calendarId,
+										});
 									}
 									this.logOperationFromBatch(op, true, undefined, batchId);
 									break;
@@ -1582,6 +1650,16 @@ export default class ChronosPlugin extends Plugin {
 			this.syncManager.updateLastSyncTime();
 			await this.saveSettings();
 			this.updateStatusBar();
+
+			// Emit sync-complete event for other plugins
+			this.events.emit('sync-complete', {
+				timestamp: new Date(),
+				created: created + retryResult.succeeded,
+				updated,
+				deleted,
+				completed,
+				errors: failed,
+			});
 
 			// Report results
 			const hasChanges = created > 0 || updated > 0 || recreated > 0 || rerouted > 0 || completed > 0 || deleted > 0 || failed > 0 || retryResult.succeeded > 0;
@@ -2128,8 +2206,54 @@ export default class ChronosPlugin extends Plugin {
 		this.stopSyncInterval();
 		// Clean up the auth server if it's still running
 		this.googleAuth?.stopServer();
+		// Clean up event listeners
+		this.events.removeAllListeners();
 		console.log('Chronos plugin unloaded');
 	}
+
+	// ==========================================
+	// PUBLIC API FOR OTHER PLUGINS
+	// ==========================================
+
+	/**
+	 * Get all synced tasks with their calendar event info
+	 * Useful for other plugins that want to build on Chronos data
+	 *
+	 * @example
+	 * ```typescript
+	 * const chronos = app.plugins.plugins['chronos'];
+	 * const tasks = chronos.getSyncedTasks();
+	 * for (const [taskId, info] of Object.entries(tasks)) {
+	 *     console.log(`${info.title} on ${info.date} at ${info.time}`);
+	 * }
+	 * ```
+	 */
+	getSyncedTasks(): Record<string, SyncedTaskInfo> {
+		return this.syncManager.getSyncData().syncedTasks;
+	}
+
+	/**
+	 * Get a specific synced task by its task ID
+	 */
+	getSyncedTask(taskId: string): SyncedTaskInfo | undefined {
+		return this.syncManager.getSyncInfo(taskId);
+	}
+
+	/**
+	 * Check if Chronos is connected to Google Calendar
+	 */
+	isConnected(): boolean {
+		return this.isAuthenticated();
+	}
+
+	/**
+	 * Get the default calendar ID
+	 */
+	getDefaultCalendarId(): string {
+		return this.settings.googleCalendarId;
+	}
+
+	// ==========================================
 
 	async loadSettings() {
 		const data: ChronosData = await this.loadData() || { settings: DEFAULT_SETTINGS };

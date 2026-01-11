@@ -1,6 +1,7 @@
 import { ItemView, WorkspaceLeaf, Editor } from 'obsidian';
 import { GoogleEvent } from './googleCalendar';
 import { SyncedTaskInfo } from './syncManager';
+import { AgendaTaskEvent } from './events';
 
 export const AGENDA_VIEW_TYPE = 'chronos-agenda-view';
 
@@ -23,6 +24,10 @@ export interface AgendaViewDeps {
     openFile: (filePath: string, lineNumber: number) => Promise<void>;
     importAgendaToEditor: (editor: Editor, date: Date) => Promise<void>;
     getActiveEditor: () => Editor | null;
+    // Event emitter callbacks for inter-plugin communication
+    onAgendaRefresh?: (date: Date, events: AgendaTaskEvent[]) => void;
+    onTaskStartingSoon?: (task: AgendaTaskEvent, minutesUntilStart: number) => void;
+    onTaskNow?: (task: AgendaTaskEvent) => void;
 }
 
 export class AgendaView extends ItemView {
@@ -149,6 +154,90 @@ export class AgendaView extends ItemView {
 
         this.isLoading = false;
         this.render();
+
+        // Emit events for inter-plugin communication
+        this.emitAgendaEvents();
+    }
+
+    /**
+     * Convert AgendaEvent to AgendaTaskEvent for event emission
+     */
+    private toAgendaTaskEvent(event: AgendaEvent, syncInfo?: SyncedTaskInfo): AgendaTaskEvent {
+        let dateStr = '';
+        let timeStr: string | null = null;
+        let isAllDay = false;
+
+        if (event.start.date) {
+            dateStr = event.start.date;
+            isAllDay = true;
+        } else if (event.start.dateTime) {
+            const dt = new Date(event.start.dateTime);
+            dateStr = dt.toISOString().split('T')[0];
+            timeStr = dt.toTimeString().slice(0, 5); // HH:mm
+        }
+
+        return {
+            title: event.summary,
+            date: dateStr,
+            time: timeStr,
+            filePath: syncInfo?.filePath || '',
+            lineNumber: syncInfo?.lineNumber || 0,
+            eventId: event.id,
+            calendarId: event.calendarId,
+            isAllDay,
+            tags: syncInfo?.tags || [],
+        };
+    }
+
+    /**
+     * Emit agenda-related events for inter-plugin communication
+     */
+    private emitAgendaEvents(): void {
+        if (this.events.length === 0) return;
+
+        // Build lookup for sync info
+        const syncedTasks = this.deps.getSyncedTasks();
+        const eventIdToTask: Record<string, SyncedTaskInfo> = {};
+        for (const [taskId, info] of Object.entries(syncedTasks)) {
+            eventIdToTask[info.eventId] = info;
+        }
+
+        // Convert events to AgendaTaskEvent format
+        const taskEvents: AgendaTaskEvent[] = this.events.map(event =>
+            this.toAgendaTaskEvent(event, eventIdToTask[event.id])
+        );
+
+        // Emit agenda-refresh event
+        if (this.deps.onAgendaRefresh) {
+            this.deps.onAgendaRefresh(this.currentDate, taskEvents);
+        }
+
+        // Only check for "starting soon" / "now" if viewing today
+        if (!this.isToday()) return;
+
+        const now = new Date();
+        const STARTING_SOON_MINUTES = 15;
+
+        for (const event of this.events) {
+            if (!event.start.dateTime) continue; // Skip all-day events
+
+            const startTime = new Date(event.start.dateTime);
+            const minutesUntilStart = (startTime.getTime() - now.getTime()) / (1000 * 60);
+            const taskEvent = this.toAgendaTaskEvent(event, eventIdToTask[event.id]);
+
+            // Check if task is "now" (started within last 5 minutes, not ended yet)
+            if (minutesUntilStart <= 0 && minutesUntilStart > -5) {
+                if (this.deps.onTaskNow) {
+                    this.deps.onTaskNow(taskEvent);
+                }
+            }
+            // Check if task is "starting soon" (within next 15 minutes)
+            else if (minutesUntilStart > 0 && minutesUntilStart <= STARTING_SOON_MINUTES) {
+                if (this.deps.onTaskStartingSoon) {
+                    this.deps.onTaskStartingSoon(taskEvent, Math.ceil(minutesUntilStart));
+                }
+            }
+        }
     }
 
     private goToPreviousDay(): void {

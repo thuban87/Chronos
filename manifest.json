@@ -1,7 +1,7 @@
 {
-  "id": "chronos",
-  "name": "Chronos",
-  "version": "0.1.0",
+  "id": "chronos-google-calendar-sync",
+  "name": "Chronos - Google Calendar Sync",
+  "version": "1.5.0",
   "minAppVersion": "1.0.0",
   "description": "Sync Obsidian tasks with Google Calendar for reliable cross-device reminders",
   "author": "Brad Wales",
