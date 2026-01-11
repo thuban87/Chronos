@@ -7,7 +7,7 @@ const prod = process.argv[2] === "production";
 // Deploy path for Chronos plugin
 const deployPath = process.env.OBSIDIAN_PLUGIN_PATH
   ? process.env.OBSIDIAN_PLUGIN_PATH
-  : "G:/My Drive/IT/Obsidian Vault/My Notebooks/.obsidian/plugins/chronos";
+  : "G:/My Drive/IT/Obsidian Vault/My Notebooks/.obsidian/plugins/chronos-google-calendar-sync";
 
 const outfile = `${deployPath}/main.js`;
 

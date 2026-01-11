@@ -199,6 +199,8 @@ export interface SyncedTaskInfo {
     date?: string;
     /** Task time (for reconciliation - distinguishes same-title tasks at different times) */
     time?: string | null;
+    /** Tags from the original task (e.g., ['#work', '#project']) */
+    tags?: string[];
     /** Whether this task has been severed (won't sync unless edited) */
     severed?: boolean;
     /** Content hash at time of severance (to detect edits) */
@@ -674,6 +676,7 @@ export class SyncManager {
             title: task.title,
             date: task.date,
             time: task.time,
+            tags: task.tags,
             isRecurring: !!task.recurrenceRule,
         };
     }
