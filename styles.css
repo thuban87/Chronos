@@ -2323,3 +2323,130 @@
     font-size: 0.85em;
     font-style: italic;
 }
+
+/* Recurring Tasks Section in Settings */
+.chronos-recurring-status {
+    padding: 0.5em 0.75em;
+    border-radius: 4px;
+    font-size: 0.9em;
+    margin-bottom: 0.75em;
+}
+
+.chronos-recurring-enabled {
+    background-color: rgba(var(--color-green-rgb), 0.15);
+    color: var(--text-success);
+}
+
+.chronos-recurring-disabled {
+    background-color: var(--background-secondary);
+    color: var(--text-muted);
+}
+
+.chronos-recurring-info {
+    font-size: 0.9em;
+    color: var(--text-muted);
+    line-height: 1.5;
+    padding: 0.75em 1em;
+    background-color: var(--background-secondary);
+    border-radius: 6px;
+    margin-top: 0.5em;
+}
+
+.chronos-recurring-info p {
+    margin: 0.5em 0;
+}
+
+.chronos-recurring-requirement {
+    color: var(--text-warning);
+    padding: 0.5em 0.75em;
+    background: rgba(var(--color-orange-rgb), 0.1);
+    border-radius: 4px;
+    margin-top: 0.75em !important;
+}
+
+/* Recurring Enable Modal */
+.chronos-recurring-enable-modal {
+    max-width: 500px;
+}
+
+.chronos-recurring-warning {
+    padding: 1em;
+    background-color: var(--background-secondary);
+    border-radius: 6px;
+    border-left: 3px solid var(--text-warning);
+    margin-bottom: 1em;
+}
+
+.chronos-recurring-warning-header {
+    font-weight: 500;
+    margin: 0 0 0.5em 0;
+    color: var(--text-warning);
+}
+
+.chronos-recurring-requirements {
+    margin: 0;
+    padding-left: 1.25em;
+    line-height: 1.6;
+    color: var(--text-muted);
+}
+
+.chronos-recurring-requirements li {
+    margin-bottom: 0.5em;
+}
+
+.chronos-recurring-instructions {
+    padding: 1em;
+    background-color: var(--background-secondary);
+    border-radius: 6px;
+    margin-bottom: 1em;
+}
+
+.chronos-recurring-instructions-header {
+    font-weight: 500;
+    margin: 0 0 0.25em 0;
+}
+
+.chronos-recurring-instructions-path {
+    font-family: var(--font-monospace);
+    font-size: 0.9em;
+    color: var(--text-muted);
+    margin: 0;
+}
+
+.chronos-recurring-confirm {
+    padding: 0.75em 1em;
+    background-color: var(--background-secondary);
+    border-radius: 6px;
+    margin-bottom: 1em;
+}
+
+.chronos-recurring-checkbox-container {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.5em;
+}
+
+.chronos-recurring-checkbox-container input[type="checkbox"] {
+    margin-top: 3px;
+    flex-shrink: 0;
+}
+
+.chronos-recurring-checkbox-container label {
+    font-size: 0.9em;
+    line-height: 1.4;
+    cursor: pointer;
+}
+
+.chronos-recurring-buttons {
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5em;
+    margin-top: 1em;
+    padding-top: 1em;
+    border-top: 1px solid var(--background-modifier-border);
+}
+
+.chronos-recurring-buttons button[disabled] {
+    opacity: 0.5;
+    cursor: not-allowed;
+}
