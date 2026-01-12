@@ -505,6 +505,7 @@ Document these for users:
 | Mode change requires reload | Changing the Event Routing Behavior mode requires reloading Obsidian to take effect. |
 | True duplicates not supported | Two tasks with identical title, date, time, and file cannot both sync. First occurrence wins, second is skipped with a warning. |
 | Legacy sync data | Tasks synced before Session 10 may lack lineNumber/time fields, causing a one-time delete+create on first edit. Subsequent edits work correctly. |
+| External change detection throttled | To reduce API calls, detection of events deleted/moved in Google Calendar is throttled to once per hour during auto-sync. Manual "Sync Now" (command palette or status bar click) always checks immediately. |
 
 ---
 
