@@ -3,7 +3,7 @@ import { GoogleAuth, TokenData, GoogleAuthCredentials } from './src/googleAuth';
 import { TaskParser, ChronosTask } from './src/taskParser';
 import { DateTimeModal } from './src/dateTimeModal';
 import { GoogleCalendarApi, GoogleCalendar, GoogleEvent } from './src/googleCalendar';
-import { SyncManager, ChronosSyncData, PendingOperation, SyncLogEntry, MultiCalendarSyncDiff, SyncedTaskInfo, PendingDeletion, DeletedEventRecord, PendingSeverance } from './src/syncManager';
+import { SyncManager, ChronosSyncData, PendingOperation, SyncLogEntry, MultiCalendarSyncDiff, SyncedTaskInfo, PendingDeletion, DeletedEventRecord, PendingSeverance, PendingSuccessorCheck } from './src/syncManager';
 import { AgendaView, AGENDA_VIEW_TYPE, AgendaViewDeps, AgendaEvent } from './src/agendaView';
 import { BatchCalendarApi, ChangeSetOperation, BatchResult, DivertedDeletion, PendingRecurringCompletion, generateOperationId } from './src/batchApi';
 import { RecurringDeleteModal, RecurringDeleteChoice } from './src/recurringDeleteModal';
@@ -15,6 +15,8 @@ import { EventRestoreModal } from './src/eventRestoreModal';
 import { SeveranceReviewModal } from './src/severanceReviewModal';
 import { ExclusionModal } from './src/exclusionModal';
 import { RecurringEnableModal } from './src/recurringEnableModal';
+import { SeriesDisconnectionModal } from './src/seriesDisconnectionModal';
+import { RecurrenceChangeModal } from './src/recurrenceChangeModal';
 import { ChronosEvents, ChronosEventPayloads, AgendaTaskEvent } from './src/events';
 
 // Re-export types for other plugins to use
