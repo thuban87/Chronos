@@ -20,10 +20,12 @@ export interface DateTimeResult {
 export class DateTimeModal extends Modal {
     private result: DateTimeResult;
     private onSubmit: (result: DateTimeResult) => void;
+    private enableRecurrence: boolean;
 
-    constructor(app: App, onSubmit: (result: DateTimeResult) => void) {
+    constructor(app: App, onSubmit: (result: DateTimeResult) => void, enableRecurrence: boolean = false) {
         super(app);
         this.onSubmit = onSubmit;
+        this.enableRecurrence = enableRecurrence;
 
         // Default to today
         const today = new Date();
@@ -224,8 +226,11 @@ export class DateTimeModal extends Modal {
         });
         minutesDiv.createEl('span', { text: 'm', cls: 'chronos-duration-unit' });
 
-        // Recurrence section
+        // Recurrence section (only shown when recurring tasks feature is enabled)
         const recurrenceContainer = contentEl.createDiv({ cls: 'chronos-recurrence-section' });
+        if (!this.enableRecurrence) {
+            recurrenceContainer.style.display = 'none';
+        }
 
         new Setting(recurrenceContainer)
             .setName('Repeat')

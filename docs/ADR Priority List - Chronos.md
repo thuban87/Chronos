@@ -2,7 +2,7 @@
 
 **Last Updated:** January 11, 2026
 **Version:** 1.5.0
-**Status:** Active Development - Phase 17 Complete (Event System), Phase 18 Planned (Recurring Succession)
+**Status:** Active Development - Phase 18 In Progress (Recurring Succession)
 
 ---
 
@@ -430,18 +430,20 @@ chronos.events.on('task-created', (payload) => { ... });
 
 ---
 
-## Phase 18: Recurring Task Succession - PLANNED
+## Phase 18: Recurring Task Succession - COMPLETE ✓
 
 **Goal:** Fix duplicate event bug when completing recurring tasks with Tasks plugin.
 
 | Order | Feature | Status | Notes |
 |-------|---------|--------|-------|
-| 105 | Store recurrenceRule in SyncedTaskInfo | Pending | Currently only stores isRecurring boolean |
-| 106 | Third reconciliation pass | Pending | Detect successor tasks in computeMultiCalendarSyncDiff() |
-| 107 | Sync record migration | Pending | Transfer eventId from old task to successor |
-| 108 | Pending successor check queue | Pending | Defer check to handle race condition with Tasks plugin |
-| 109 | Series disconnection modal | Pending | User chooses: delete series or keep |
-| 110 | Recurrence change modal | Pending | Handle significant pattern changes (every day → every week) |
+| 105 | Store recurrenceRule in SyncedTaskInfo | ✓ Complete | Added recurrenceRule field to sync records |
+| 106 | Third reconciliation pass | ✓ Complete | Detects successor tasks in computeMultiCalendarSyncDiff() |
+| 107 | Sync record migration | ✓ Complete | migrateRecurringSyncRecord() transfers eventId |
+| 108 | Pending successor check queue | ✓ Complete | PendingSuccessorCheck interface and helpers |
+| 109 | Series disconnection modal | ✓ Complete | seriesDisconnectionModal.ts |
+| 110 | Recurrence change modal | ✓ Complete | recurrenceChangeModal.ts |
+| 111 | Enable recurring tasks toggle | ✓ Complete | Setting with warning modal |
+| 112 | Gating recurrence behind toggle | ✓ Complete | Hide UI and ignore 🔁 when toggle OFF |
 
 **The Problem:**
 1. Task with 🔁 syncs to Google as recurring event (RRULE)
@@ -488,7 +490,8 @@ Features that are valuable but complex or low priority. May implement based on u
 | ~~Task ID uses line number (wrong)~~ | ~~High~~ | ✓ Fixed - Title-based ID + two-pass reconciliation |
 | Accidental completion edge case | Low | Unchecking creates duplicate (user can delete manually) |
 | Severed task edit-back edge case | Medium | When severed task is edited, then edited back to original time, reconciliation doesn't detect the change and task remains severed. Workaround: edit to a different time than original. |
-| **Recurring task completion duplicates** | **High** | **Completing a recurring task creates duplicate calendar events. Tasks plugin creates new instance, Chronos syncs it as new recurring series. Fix planned in Phase 18.** |
+| **Recurring task completion duplicates** | **High** | **✓ Fixed (Phase 18) - Third reconciliation pass migrates sync records to successor tasks.** |
+| Recurring modals need polish | Low | SeriesDisconnectionModal and RecurrenceChangeModal need improved copy and UX. |
 
 ---
 

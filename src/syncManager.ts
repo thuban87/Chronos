@@ -432,7 +432,8 @@ export class SyncManager {
      */
     computeMultiCalendarSyncDiff(
         currentTasks: ChronosTask[],
-        getTargetCalendar: (task: ChronosTask) => { calendarId: string; warning?: string }
+        getTargetCalendar: (task: ChronosTask) => { calendarId: string; warning?: string },
+        enableRecurringTasks: boolean = false
     ): MultiCalendarSyncDiff {
         const diff: MultiCalendarSyncDiff = {
             toCreate: [],
@@ -688,56 +689,59 @@ export class SyncManager {
         diff.toCreate = diff.toCreate.filter((_, i) => !reconciledNewTasks.has(i));
 
         // THIRD RECONCILIATION PASS: Recurring Task Succession
+        // Only run if recurring tasks feature is enabled
         // When a recurring task is completed: Tasks plugin creates a new instance with next date.
         // The orphan (old task) and new task have: same title, same time, same file, but DIFFERENT date.
         // We migrate the sync record to the successor to avoid creating duplicate calendar events.
         const reconciledRecurringOrphans = new Set<string>();
         const reconciledRecurringNewTasks = new Set<number>();
 
-        for (const orphanId of potentialOrphans) {
-            if (reconciledOrphans.has(orphanId)) continue; // Already reconciled in Pass 1 or 2
+        if (enableRecurringTasks) {
+            for (const orphanId of potentialOrphans) {
+                if (reconciledOrphans.has(orphanId)) continue; // Already reconciled in Pass 1 or 2
 
-            const orphanInfo = this.syncData.syncedTasks[orphanId];
+                const orphanInfo = this.syncData.syncedTasks[orphanId];
 
-            // Only process recurring tasks
-            if (!orphanInfo.isRecurring) {
-                continue;
-            }
+                // Only process recurring tasks
+                if (!orphanInfo.isRecurring) {
+                    continue;
+                }
 
-            // Try to find a matching successor task
-            for (let i = 0; i < diff.toCreate.length; i++) {
-                if (reconciledNewTasks.has(i) || reconciledRecurringNewTasks.has(i)) continue;
+                // Try to find a matching successor task
+                for (let i = 0; i < diff.toCreate.length; i++) {
+                    if (reconciledNewTasks.has(i) || reconciledRecurringNewTasks.has(i)) continue;
 
-                const newTask = diff.toCreate[i].task;
+                    const newTask = diff.toCreate[i].task;
 
-                // Succession criteria:
-                // 1. Same file (successor is created near completed task)
-                // 2. Same title
-                // 3. Same time (or both all-day)
-                // 4. New date is AFTER old date (it's the next occurrence)
-                // 5. New task has recurrence
-                const timeMatches = (newTask.time === orphanInfo.time) ||
-                    (newTask.time === null && (orphanInfo.time === null || orphanInfo.time === undefined));
+                    // Succession criteria:
+                    // 1. Same file (successor is created near completed task)
+                    // 2. Same title
+                    // 3. Same time (or both all-day)
+                    // 4. New date is AFTER old date (it's the next occurrence)
+                    // 5. New task has recurrence
+                    const timeMatches = (newTask.time === orphanInfo.time) ||
+                        (newTask.time === null && (orphanInfo.time === null || orphanInfo.time === undefined));
 
-                const oldDate = new Date(orphanInfo.date || '');
-                const newDate = new Date(newTask.date);
-                const isFutureDate = !isNaN(oldDate.getTime()) && !isNaN(newDate.getTime()) &&
-                    newDate.getTime() > oldDate.getTime();
+                    const oldDate = new Date(orphanInfo.date || '');
+                    const newDate = new Date(newTask.date);
+                    const isFutureDate = !isNaN(oldDate.getTime()) && !isNaN(newDate.getTime()) &&
+                        newDate.getTime() > oldDate.getTime();
 
-                if (newTask.filePath === orphanInfo.filePath &&
-                    newTask.title === orphanInfo.title &&
-                    timeMatches &&
-                    isFutureDate &&
-                    newTask.recurrenceRule) {
+                    if (newTask.filePath === orphanInfo.filePath &&
+                        newTask.title === orphanInfo.title &&
+                        timeMatches &&
+                        isFutureDate &&
+                        newTask.recurrenceRule) {
 
-                    // Found a successor! Migrate the sync record
-                    reconciledRecurringOrphans.add(orphanId);
-                    reconciledRecurringNewTasks.add(i);
+                        // Found a successor! Migrate the sync record
+                        reconciledRecurringOrphans.add(orphanId);
+                        reconciledRecurringNewTasks.add(i);
 
-                    // Migrate: transfer eventId to successor task
-                    this.migrateRecurringSyncRecord(orphanId, newTask);
+                        // Migrate: transfer eventId to successor task
+                        this.migrateRecurringSyncRecord(orphanId, newTask);
 
-                    break; // Found match, move to next orphan
+                        break; // Found match, move to next orphan
+                    }
                 }
             }
         }
@@ -971,7 +975,8 @@ export class SyncManager {
         defaultDurationMinutes: number,
         defaultReminderMinutes: number[],
         timeZone: string,
-        safeMode: boolean = true
+        safeMode: boolean = true,
+        enableRecurringTasks: boolean = false
     ): ChangeSet {
         const operations: ChangeSetOperation[] = [];
         const needsEventData: ChangeSetOperation[] = [];
@@ -990,7 +995,7 @@ export class SyncManager {
                 durationMinutes: taskDuration,
                 reminderMinutes,
                 timeZone,
-                recurrenceRule: task.recurrenceRule,
+                recurrenceRule: enableRecurringTasks ? task.recurrenceRule : null,
             });
         }
 
@@ -1008,7 +1013,7 @@ export class SyncManager {
                 durationMinutes: taskDuration,
                 reminderMinutes,
                 timeZone,
-                recurrenceRule: task.recurrenceRule,
+                recurrenceRule: enableRecurringTasks ? task.recurrenceRule : null,
             };
             operations.push(op);
             needsEventData.push(op); // Mark for pre-fetch
@@ -1039,7 +1044,7 @@ export class SyncManager {
                     durationMinutes: taskDuration,
                     reminderMinutes,
                     timeZone,
-                    recurrenceRule: task.recurrenceRule,
+                    recurrenceRule: enableRecurringTasks ? task.recurrenceRule : null,
                 });
             } else if (eventRoutingBehavior === 'freshStart') {
                 // Delete old, create new - DIVERT if safeMode
@@ -1057,7 +1062,7 @@ export class SyncManager {
                         durationMinutes: taskDuration,
                         reminderMinutes,
                         timeZone,
-                        recurrenceRule: task.recurrenceRule,
+                        recurrenceRule: enableRecurringTasks ? task.recurrenceRule : null,
                     };
 
                     divertedDeletions.push({
@@ -1092,7 +1097,7 @@ export class SyncManager {
                         durationMinutes: taskDuration,
                         reminderMinutes,
                         timeZone,
-                        recurrenceRule: task.recurrenceRule,
+                        recurrenceRule: enableRecurringTasks ? task.recurrenceRule : null,
                     });
                 }
             }

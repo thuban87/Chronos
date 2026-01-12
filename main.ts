@@ -231,7 +231,7 @@ export default class ChronosPlugin extends Plugin {
 					}
 
 					editor.replaceSelection(text);
-				}).open();
+				}, this.settings.enableRecurringTasks).open();
 			}
 		});
 
@@ -1020,7 +1020,8 @@ export default class ChronosPlugin extends Plugin {
 			// Compute what needs to be done using multi-calendar routing
 			const diff = this.syncManager.computeMultiCalendarSyncDiff(
 				uncompletedTasks,
-				(task) => this.getTargetCalendarForTask(task)
+				(task) => this.getTargetCalendarForTask(task),
+				this.settings.enableRecurringTasks
 			);
 
 			// Show warnings for tasks with multiple mapped tags
@@ -1049,7 +1050,8 @@ export default class ChronosPlugin extends Plugin {
 				this.settings.defaultEventDurationMinutes,
 				this.settings.defaultReminderMinutes,
 				timeZone,
-				this.settings.safeMode
+				this.settings.safeMode,
+				this.settings.enableRecurringTasks
 			);
 
 			// Handle diverted deletions (Safety Net)
