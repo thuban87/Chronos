@@ -1,8 +1,8 @@
 # ADR Priority List - Chronos
 
-**Last Updated:** January 9, 2026
-**Version:** 0.1.0
-**Status:** Active Development - Phase 16 Complete (Exclusion Rules)
+**Last Updated:** January 11, 2026
+**Version:** 1.5.0
+**Status:** Active Development - Phase 17 Complete (Event System), Phase 18 Planned (Recurring Succession)
 
 ---
 
@@ -403,6 +403,65 @@ Each user creates their own Google Cloud project and provides their own Client I
 
 ---
 
+## Phase 17: Event System - COMPLETE ✓
+
+**Goal:** Allow other plugins to subscribe to Chronos events for inter-plugin communication.
+
+| Order | Feature | Status | Notes |
+|-------|---------|--------|-------|
+| 98 | ChronosEvents class | ✓ Complete | Typed EventEmitter with on/off/once/emit |
+| 99 | Sync lifecycle events | ✓ Complete | sync-start, sync-complete |
+| 100 | Task events | ✓ Complete | task-created, task-updated, task-completed, task-deleted |
+| 101 | Agenda events | ✓ Complete | agenda-refresh, task-starting-soon, task-now |
+| 102 | Public API methods | ✓ Complete | getSyncedTasks(), getSyncedTask(), isConnected(), getDefaultCalendarId() |
+| 103 | Type exports | ✓ Complete | Export types for consuming plugins |
+| 104 | Tags in events | ✓ Complete | Added tags to AgendaTaskEvent and SyncedTaskInfo |
+
+**New Files:**
+- `src/events.ts` - ChronosEvents class, event payload types
+
+**Usage:**
+```typescript
+const chronos = app.plugins.plugins['chronos-google-calendar-sync'];
+chronos.events.on('task-created', (payload) => { ... });
+```
+
+**Phase 17 Deliverable:** Other plugins can subscribe to Chronos events and access synced task data. ✓
+
+---
+
+## Phase 18: Recurring Task Succession - PLANNED
+
+**Goal:** Fix duplicate event bug when completing recurring tasks with Tasks plugin.
+
+| Order | Feature | Status | Notes |
+|-------|---------|--------|-------|
+| 105 | Store recurrenceRule in SyncedTaskInfo | Pending | Currently only stores isRecurring boolean |
+| 106 | Third reconciliation pass | Pending | Detect successor tasks in computeMultiCalendarSyncDiff() |
+| 107 | Sync record migration | Pending | Transfer eventId from old task to successor |
+| 108 | Pending successor check queue | Pending | Defer check to handle race condition with Tasks plugin |
+| 109 | Series disconnection modal | Pending | User chooses: delete series or keep |
+| 110 | Recurrence change modal | Pending | Handle significant pattern changes (every day → every week) |
+
+**The Problem:**
+1. Task with 🔁 syncs to Google as recurring event (RRULE)
+2. User completes task → Tasks plugin creates new instance below
+3. Chronos sees new task → creates ANOTHER recurring event
+4. Result: Duplicate recurring series in Google Calendar
+
+**The Solution:**
+- Add third reconciliation pass to detect "successor" tasks
+- Match by: same title + same time + same file + has recurrence + future date
+- Transfer sync record to successor instead of creating new event
+- Deferred check (2 sync cycles) to handle race condition
+- Modals for edge cases (no successor found, pattern changed)
+
+**Implementation Guide:** `docs/Recurring Task Succession - Implementation Guide.md`
+
+**Phase 18 Deliverable:** Completing a recurring task transfers tracking to the successor without creating duplicates.
+
+---
+
 ## Maybe Someday (Post-BRAT)
 
 Features that are valuable but complex or low priority. May implement based on user demand.
@@ -429,6 +488,7 @@ Features that are valuable but complex or low priority. May implement based on u
 | ~~Task ID uses line number (wrong)~~ | ~~High~~ | ✓ Fixed - Title-based ID + two-pass reconciliation |
 | Accidental completion edge case | Low | Unchecking creates duplicate (user can delete manually) |
 | Severed task edit-back edge case | Medium | When severed task is edited, then edited back to original time, reconciliation doesn't detect the change and task remains severed. Workaround: edit to a different time than original. |
+| **Recurring task completion duplicates** | **High** | **Completing a recurring task creates duplicate calendar events. Tasks plugin creates new instance, Chronos syncs it as new recurring series. Fix planned in Phase 18.** |
 
 ---
 

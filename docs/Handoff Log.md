@@ -1,9 +1,113 @@
 # Chronos Handoff Log
 
-**Last Updated:** January 9, 2026
-**Current Phase:** Exclusion Rules COMPLETE
-**Current Branch:** feature/exclusion-rules
-**Version:** 0.1.0
+**Last Updated:** January 11, 2026
+**Current Phase:** Event System COMPLETE, Recurring Succession PLANNED
+**Current Branch:** main
+**Version:** 1.5.0
+
+---
+
+## Session: January 11, 2026 - Event System & Recurring Task Succession Planning
+
+### Feature 1: Event System for Inter-Plugin Communication (COMPLETE)
+
+Added an event system so other plugins (like Switchboard) can subscribe to Chronos events.
+
+#### What Was Built
+
+| Component | Description |
+|-----------|-------------|
+| **ChronosEvents class** | Typed EventEmitter with on/off/once/emit methods |
+| **Sync events** | sync-start, sync-complete, task-created, task-updated, task-completed, task-deleted |
+| **Agenda events** | agenda-refresh, task-starting-soon, task-now |
+| **Public API** | getSyncedTasks(), getSyncedTask(), isConnected(), getDefaultCalendarId() |
+| **Type exports** | ChronosEvents, ChronosEventPayloads, AgendaTaskEvent, ChronosTask, SyncedTaskInfo |
+| **Tags in events** | Added `tags: string[]` to AgendaTaskEvent and SyncedTaskInfo |
+
+#### Files Created/Modified
+
+| File | Changes |
+|------|---------|
+| `src/events.ts` | **NEW** - ChronosEvents class, event payload types, AgendaTaskEvent interface |
+| `main.ts` | Events property, sync event emissions, public API methods, type exports |
+| `src/agendaView.ts` | Agenda event emissions, toAgendaTaskEvent() helper |
+| `src/syncManager.ts` | Added `tags` field to SyncedTaskInfo, stored in recordSync() |
+
+#### Usage Example
+
+```typescript
+const chronos = app.plugins.plugins['chronos-google-calendar-sync'];
+
+// Subscribe to events
+chronos.events.on('task-created', (payload) => {
+    console.log('Task created:', payload.task.title);
+});
+
+chronos.events.on('task-starting-soon', (payload) => {
+    console.log(`${payload.task.title} starts in ${payload.minutesUntilStart} min`);
+});
+
+// Get synced tasks
+const tasks = chronos.getSyncedTasks();
+```
+
+#### Notes
+
+- `task-starting-soon` and `task-now` only fire during agenda refresh (not real-time)
+- Other plugins can use `getSyncedTasks()` to build their own timers if needed
+- Tags are stored during sync and available in AgendaTaskEvent
+
+---
+
+### Feature 2: Recurring Task Succession (PLANNED - NOT IMPLEMENTED)
+
+Identified and documented a bug where completing a recurring task creates duplicate Google Calendar events.
+
+#### The Problem
+
+1. Task with 🔁 syncs to Google as recurring event (RRULE)
+2. User completes task → Tasks plugin creates new instance with next date
+3. Chronos sees new task → creates ANOTHER recurring event
+4. Result: Duplicate recurring series in Google Calendar
+
+#### The Solution (Designed, Not Yet Implemented)
+
+Add a "Third Reconciliation Pass" in `computeMultiCalendarSyncDiff()` to detect when a new task is the "successor" to a completed recurring task, and transfer the sync record instead of creating a new event.
+
+**Key components:**
+- Store `recurrenceRule` in SyncedTaskInfo (not just `isRecurring` boolean)
+- Match successor by: same title + same time + same file + has recurrence + future date
+- Deferred check (2 sync cycles) to handle race condition with Tasks plugin
+- Modal for disconnected series (no successor found)
+- Modal for significant recurrence pattern changes
+
+#### Implementation Guide
+
+Full implementation details documented in:
+**`docs/Recurring Task Succession - Implementation Guide.md`**
+
+This guide includes:
+- Step-by-step implementation instructions
+- Code snippets for all changes
+- New modal designs
+- Testing checklist
+- Edge case handling
+
+---
+
+### Git Commit Suggestion (Event System)
+
+```
+feat: Add event system for inter-plugin communication
+
+- Add ChronosEvents class with typed event emitter (src/events.ts)
+- Emit sync lifecycle events: sync-start, sync-complete
+- Emit task events: task-created, task-updated, task-completed, task-deleted
+- Emit agenda events: agenda-refresh, task-starting-soon, task-now
+- Add public API: getSyncedTasks(), getSyncedTask(), isConnected(), getDefaultCalendarId()
+- Export types (ChronosEvents, ChronosEventPayloads, AgendaTaskEvent, ChronosTask, SyncedTaskInfo)
+- Add tags field to AgendaTaskEvent and SyncedTaskInfo for tag-based filtering
+```
 
 ---
 
@@ -743,61 +847,71 @@ Polished Phase 9 features with improved UX. Added custom reminders UI to the dat
 ## Next Session Prompt
 
 ```
-Chronos - Exclusion Rules COMPLETE
+Chronos - Phase 18: Recurring Task Succession
 
 **Directory:** C:\Users\bwales\projects\obsidian-plugins\Chronos
 **Deploy to:** G:\My Drive\IT\Obsidian Vault\My Notebooks\.obsidian\plugins\chronos\
 **GitHub:** https://github.com/thuban87/Chronos (public)
-**Current branch:** feature/exclusion-rules
-**Version:** 0.1.0
+**Current branch:** main
+**Version:** 1.5.0
 
-**IMPORTANT: Read docs\Handoff Log.md and docs\ADR Priority List - Chronos.md first**
-
----
-
-## Context
-
-Exclusion Rules is COMPLETE:
-- Exclude folders/files from sync via settings
-- Autocomplete for folder/file path entry
-- Modal when excluding locations with synced tasks
-- User chooses: keep events in calendar or delete them
-- Path normalization handles spaces and different slash styles
+**CRITICAL: Read these docs FIRST before writing any code:**
+1. `docs/Handoff Log.md` - Current state and recent changes
+2. `docs/ADR Priority List - Chronos.md` - Phase 18 requirements
+3. `docs/Recurring Task Succession - Implementation Guide.md` - DETAILED IMPLEMENTATION PLAN
 
 ---
 
-## Current Capabilities
+## Your Task: Implement Phase 18 - Recurring Task Succession
 
-- One-way sync: Obsidian tasks → Google Calendar
-- Multi-calendar support with tag-based routing
-- Event routing modes (Preserve/Keep Both/Fresh Start)
-- Robust task reconciliation (renames, rescheduling, moves all work)
-- Preserves user-edited event data (description, location, attendees)
-- Custom per-task reminders (🔔 syntax)
-- Custom duration with ⏱️ syntax
-- Recurring events with 🔁 syntax
-- Multi-calendar agenda sidebar
-- Event import to file (list/table/simple formats)
-- **Folder/file exclusion rules** (NEW)
-- Sync history with batched logs
-- Batch API for fast syncing
-- Smart retry on server errors
-- Safety Net deletion protection
-- External Event Handling (moved/deleted events in Google Calendar)
+There's a HIGH PRIORITY BUG: When a user completes a recurring task, duplicate Google Calendar events are created. The Tasks plugin creates a new task instance, and Chronos syncs it as a new recurring series.
+
+**The solution is fully designed and documented.** Your job is to implement it following the guide.
 
 ---
 
-## Known Issue
+## The Problem
 
-**Edit-back edge case:** When a severed task is edited to a new time, then edited back to original, task remains severed. Workaround: edit to a different time than the original.
+1. Task with 🔁 syncs to Google as recurring event (RRULE)
+2. User completes task → Tasks plugin creates new instance below
+3. Chronos sees new task → creates ANOTHER recurring event
+4. Result: Duplicate recurring series
+
+## The Solution (Summary)
+
+Add a "Third Reconciliation Pass" in `computeMultiCalendarSyncDiff()` that:
+1. Detects when a new task is the "successor" to a completed recurring task
+2. Matches by: same title + same time + same file + has recurrence + future date
+3. Transfers the sync record (same eventId) instead of creating new event
+4. Defers check for 2 sync cycles to handle race condition with Tasks plugin
+5. Shows modal if no successor found (user chooses: delete series or keep)
 
 ---
 
-## Suggested Next Steps
+## Key Files to Modify/Create
 
-1. **Test multi-calendar agenda** - Select multiple calendars, verify display
-2. **Test import feature** - Import agenda to notes in all three formats
-3. **Consider BRAT release** - Plugin is feature-rich and ready for beta testers
+| File | Action |
+|------|--------|
+| `src/syncManager.ts` | Add recurrenceRule to SyncedTaskInfo, add pendingSuccessorChecks queue, add third reconciliation pass |
+| `src/seriesDisconnectionModal.ts` | **CREATE** - Modal for disconnected series |
+| `src/recurrenceChangeModal.ts` | **CREATE** - Modal for pattern changes |
+| `main.ts` | Add processPendingSuccessorChecks(), wire up modals |
+| `styles.css` | Add modal styles |
+
+---
+
+## Prerequisites
+
+User must change Tasks plugin setting: new tasks appear BELOW completed tasks (not above).
+
+---
+
+## Testing Checklist
+
+1. Create recurring task, sync, complete it
+2. Verify NO duplicate event created
+3. Verify new task inherits same eventId
+4. Test edge cases: rename new task, delete new task, change pattern
 
 ---
 
