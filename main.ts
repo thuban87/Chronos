@@ -176,15 +176,17 @@ export default class ChronosPlugin extends Plugin {
 			name: 'Insert date/time for task',
 			editorCallback: (editor) => {
 				new DateTimeModal(this.app, (result) => {
-					let text = `📅 ${result.date}`;
+					let text = '';
+
+					// Chronos-specific emojis first (before date, so Tasks plugin parses correctly)
 					if (result.time) {
-						text += ` ⏰ ${result.time}`;
+						text += `⏰ ${result.time} `;
 					}
 					if (result.customReminders && (result.reminder1 || result.reminder2)) {
 						const reminders: number[] = [];
 						if (result.reminder1) reminders.push(result.reminder1);
 						if (result.reminder2) reminders.push(result.reminder2);
-						text += ` 🔔 ${reminders.join(',')}`;
+						text += `🔔 ${reminders.join(',')} `;
 					}
 					if (result.customDuration && (result.durationHours || result.durationMinutes)) {
 						let durationText = '⏱️ ';
@@ -196,12 +198,19 @@ export default class ChronosPlugin extends Plugin {
 						}
 						// Only add if we have at least some duration
 						if (durationText !== '⏱️ ') {
-							text += ` ${durationText}`;
+							text += `${durationText} `;
 						}
 					}
-					// Build recurrence text
+					if (result.noSync) {
+						text += '🚫 ';
+					}
+
+					// Date (Tasks plugin recognizes this)
+					text += `📅 ${result.date}`;
+
+					// Recurrence directly after date (Tasks plugin recognizes this)
 					if (result.recurrenceFrequency !== 'none') {
-						let recurrenceText = '🔁 every ';
+						let recurrenceText = ' 🔁 every ';
 						if (result.recurrenceInterval > 1) {
 							recurrenceText += `${result.recurrenceInterval} `;
 						}
@@ -218,11 +227,9 @@ export default class ChronosPlugin extends Plugin {
 							};
 							recurrenceText += freqMap[result.recurrenceFrequency] || result.recurrenceFrequency;
 						}
-						text += ` ${recurrenceText}`;
+						text += recurrenceText;
 					}
-					if (result.noSync) {
-						text += ' 🚫';
-					}
+
 					editor.replaceSelection(text);
 				}).open();
 			}

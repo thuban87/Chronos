@@ -55,7 +55,7 @@ export class RecurringEnableModal extends Modal {
             cls: 'chronos-recurring-instructions-header'
         });
         instructionsDiv.createEl('p', {
-            text: 'Settings → Tasks → "Where to create the new task" → Select "Below the current task"',
+            text: 'Settings → Tasks → Recurring Tasks → "Next recurrence appears on the line below"',
             cls: 'chronos-recurring-instructions-path'
         });
 
