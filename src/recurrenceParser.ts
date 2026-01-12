@@ -63,6 +63,12 @@ export function parseRecurrence(recurrenceText: string): RecurrenceResult {
     // Remove "when done" suffix if present (we don't support completion-triggered recurrence)
     const cleanText = text.replace(/\s*when\s+done\s*$/i, '').trim();
 
+    // Try: every week on [weekday(s)] (Tasks plugin normalized format)
+    const weeklyBydayResult = parseWeeklyByday(cleanText);
+    if (weeklyBydayResult.success) {
+        return weeklyBydayResult;
+    }
+
     // Try: every [weekday(s)]
     const weekdayResult = parseWeekdays(cleanText);
     if (weekdayResult.success) {
@@ -87,6 +93,43 @@ export function parseRecurrence(recurrenceText: string): RecurrenceResult {
         success: false,
         error: `Unrecognized recurrence pattern: "${recurrenceText}"`
     };
+}
+
+/**
+ * Parse "every week on Monday" or "every week on Monday, Wednesday"
+ * This is the format Tasks plugin uses after completing a recurring task
+ */
+function parseWeeklyByday(text: string): RecurrenceResult {
+    // Match: every week on [day(s)]
+    const match = text.match(/^every\s+week\s+on\s+(.+)$/);
+    if (!match) {
+        return { rrule: null, description: null, success: false };
+    }
+
+    const daysPart = match[1];
+    // Split on commas, "and", or whitespace
+    const dayNames = daysPart.split(/[,\s]+(?:and\s+)?/).filter(d => d.length > 0 && d !== 'and');
+
+    const rruleDays: string[] = [];
+    const readableDays: string[] = [];
+
+    for (const dayName of dayNames) {
+        const rruleDay = DAY_MAP[dayName.toLowerCase()];
+        if (rruleDay) {
+            rruleDays.push(rruleDay);
+            // Capitalize first letter for readable version
+            readableDays.push(dayName.charAt(0).toUpperCase() + dayName.slice(1).toLowerCase());
+        }
+    }
+
+    if (rruleDays.length > 0 && rruleDays.length === dayNames.length) {
+        // All parts were valid day names
+        const rrule = `FREQ=WEEKLY;BYDAY=${rruleDays.join(',')}`;
+        const description = `Weekly on ${readableDays.join(', ')}`;
+        return { rrule, description, success: true };
+    }
+
+    return { rrule: null, description: null, success: false };
 }
 
 /**

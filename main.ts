@@ -3,7 +3,7 @@ import { GoogleAuth, TokenData, GoogleAuthCredentials } from './src/googleAuth';
 import { TaskParser, ChronosTask } from './src/taskParser';
 import { DateTimeModal } from './src/dateTimeModal';
 import { GoogleCalendarApi, GoogleCalendar, GoogleEvent } from './src/googleCalendar';
-import { SyncManager, ChronosSyncData, PendingOperation, SyncLogEntry, MultiCalendarSyncDiff, SyncedTaskInfo, PendingDeletion, DeletedEventRecord, PendingSeverance } from './src/syncManager';
+import { SyncManager, ChronosSyncData, PendingOperation, SyncLogEntry, MultiCalendarSyncDiff, SyncedTaskInfo, PendingDeletion, DeletedEventRecord, PendingSeverance, PendingSuccessorCheck } from './src/syncManager';
 import { AgendaView, AGENDA_VIEW_TYPE, AgendaViewDeps, AgendaEvent } from './src/agendaView';
 import { BatchCalendarApi, ChangeSetOperation, BatchResult, DivertedDeletion, PendingRecurringCompletion, generateOperationId } from './src/batchApi';
 import { RecurringDeleteModal, RecurringDeleteChoice } from './src/recurringDeleteModal';
@@ -14,6 +14,9 @@ import { PowerUserWarningModal } from './src/powerUserWarningModal';
 import { EventRestoreModal } from './src/eventRestoreModal';
 import { SeveranceReviewModal } from './src/severanceReviewModal';
 import { ExclusionModal } from './src/exclusionModal';
+import { RecurringEnableModal } from './src/recurringEnableModal';
+import { SeriesDisconnectionModal } from './src/seriesDisconnectionModal';
+import { RecurrenceChangeModal } from './src/recurrenceChangeModal';
 import { ChronosEvents, ChronosEventPayloads, AgendaTaskEvent } from './src/events';
 
 // Re-export types for other plugins to use
@@ -40,6 +43,7 @@ interface ChronosSettings {
 	agendaImportFormat: 'list' | 'table' | 'simple';  // Format for importing agenda to file
 	excludedFolders: string[];  // Folders to exclude from sync (e.g., "Templates", "Archive")
 	excludedFiles: string[];  // Specific files to exclude from sync (e.g., "Tasks/reference.md")
+	enableRecurringTasks: boolean;  // Feature toggle for recurring task succession
 }
 
 interface ChronosData {
@@ -67,6 +71,7 @@ const DEFAULT_SETTINGS: ChronosSettings = {
 	agendaImportFormat: 'list',  // Default to list format
 	excludedFolders: [],  // No folders excluded by default
 	excludedFiles: [],  // No files excluded by default
+	enableRecurringTasks: false,  // Recurring task succession disabled by default (requires Tasks plugin config)
 };
 
 export default class ChronosPlugin extends Plugin {
@@ -171,15 +176,17 @@ export default class ChronosPlugin extends Plugin {
 			name: 'Insert date/time for task',
 			editorCallback: (editor) => {
 				new DateTimeModal(this.app, (result) => {
-					let text = `📅 ${result.date}`;
+					let text = '';
+
+					// Chronos-specific emojis first (before date, so Tasks plugin parses correctly)
 					if (result.time) {
-						text += ` ⏰ ${result.time}`;
+						text += `⏰ ${result.time} `;
 					}
 					if (result.customReminders && (result.reminder1 || result.reminder2)) {
 						const reminders: number[] = [];
 						if (result.reminder1) reminders.push(result.reminder1);
 						if (result.reminder2) reminders.push(result.reminder2);
-						text += ` 🔔 ${reminders.join(',')}`;
+						text += `🔔 ${reminders.join(',')} `;
 					}
 					if (result.customDuration && (result.durationHours || result.durationMinutes)) {
 						let durationText = '⏱️ ';
@@ -191,12 +198,19 @@ export default class ChronosPlugin extends Plugin {
 						}
 						// Only add if we have at least some duration
 						if (durationText !== '⏱️ ') {
-							text += ` ${durationText}`;
+							text += `${durationText} `;
 						}
 					}
-					// Build recurrence text
+					if (result.noSync) {
+						text += '🚫 ';
+					}
+
+					// Date (Tasks plugin recognizes this)
+					text += `📅 ${result.date}`;
+
+					// Recurrence directly after date (Tasks plugin recognizes this)
 					if (result.recurrenceFrequency !== 'none') {
-						let recurrenceText = '🔁 every ';
+						let recurrenceText = ' 🔁 every ';
 						if (result.recurrenceInterval > 1) {
 							recurrenceText += `${result.recurrenceInterval} `;
 						}
@@ -213,13 +227,11 @@ export default class ChronosPlugin extends Plugin {
 							};
 							recurrenceText += freqMap[result.recurrenceFrequency] || result.recurrenceFrequency;
 						}
-						text += ` ${recurrenceText}`;
+						text += recurrenceText;
 					}
-					if (result.noSync) {
-						text += ' 🚫';
-					}
+
 					editor.replaceSelection(text);
-				}).open();
+				}, this.settings.enableRecurringTasks).open();
 			}
 		});
 
@@ -1008,7 +1020,8 @@ export default class ChronosPlugin extends Plugin {
 			// Compute what needs to be done using multi-calendar routing
 			const diff = this.syncManager.computeMultiCalendarSyncDiff(
 				uncompletedTasks,
-				(task) => this.getTargetCalendarForTask(task)
+				(task) => this.getTargetCalendarForTask(task),
+				this.settings.enableRecurringTasks
 			);
 
 			// Show warnings for tasks with multiple mapped tags
@@ -1037,7 +1050,8 @@ export default class ChronosPlugin extends Plugin {
 				this.settings.defaultEventDurationMinutes,
 				this.settings.defaultReminderMinutes,
 				timeZone,
-				this.settings.safeMode
+				this.settings.safeMode,
+				this.settings.enableRecurringTasks
 			);
 
 			// Handle diverted deletions (Safety Net)
@@ -2769,6 +2783,60 @@ class ChronosSettingTab extends PluginSettingTab {
 				safeModeStatus.textContent = 'Status: Power User Mode (deletions are automatic)';
 				safeModeStatus.classList.add('chronos-safe-mode-off');
 			}
+
+			// Recurring Tasks Section
+			containerEl.createEl('h3', { text: 'Recurring Tasks' });
+
+			const recurringStatus = containerEl.createDiv({ cls: 'chronos-recurring-status' });
+			if (this.plugin.settings.enableRecurringTasks) {
+				recurringStatus.textContent = 'Status: Enabled (recurring task succession active)';
+				recurringStatus.classList.add('chronos-recurring-enabled');
+			} else {
+				recurringStatus.textContent = 'Status: Disabled (recurring tasks sync as one-time events)';
+				recurringStatus.classList.add('chronos-recurring-disabled');
+			}
+
+			new Setting(containerEl)
+				.setName('Enable recurring tasks sync')
+				.setDesc('When enabled, Chronos will track recurring task succession from Tasks plugin. Requires specific Tasks plugin configuration.')
+				.addToggle(toggle => toggle
+					.setValue(this.plugin.settings.enableRecurringTasks)
+					.onChange(async (value) => {
+						if (value) {
+							// Show warning modal when enabling
+							new RecurringEnableModal(
+								this.app,
+								async () => {
+									// User confirmed
+									this.plugin.settings.enableRecurringTasks = true;
+									await this.plugin.saveSettings();
+									recurringStatus.textContent = 'Status: Enabled (recurring task succession active)';
+									recurringStatus.classList.remove('chronos-recurring-disabled');
+									recurringStatus.classList.add('chronos-recurring-enabled');
+								},
+								() => {
+									// User cancelled - reset toggle
+									toggle.setValue(false);
+								}
+							).open();
+						} else {
+							this.plugin.settings.enableRecurringTasks = false;
+							await this.plugin.saveSettings();
+							recurringStatus.textContent = 'Status: Disabled (recurring tasks sync as one-time events)';
+							recurringStatus.classList.remove('chronos-recurring-enabled');
+							recurringStatus.classList.add('chronos-recurring-disabled');
+						}
+					}));
+
+			const recurringInfo = containerEl.createDiv({ cls: 'chronos-recurring-info' });
+			recurringInfo.innerHTML = `
+				<p><strong>What this does:</strong></p>
+				<p>When you complete a recurring task, Tasks plugin creates a new instance with the next date. 
+				With this enabled, Chronos will recognize the new task as a "successor" and track it using the 
+				existing Google Calendar recurring event instead of creating duplicates.</p>
+				<p class="chronos-recurring-requirement"><strong>⚠️ Requirement:</strong> Tasks plugin must be configured to create 
+				new recurring task instances <em>below</em> the completed task, not above.</p>
+			`;
 
 			// External Event Handling Section
 			containerEl.createEl('h3', { text: 'External Event Handling' });

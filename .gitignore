@@ -17,8 +17,5 @@ desktop.ini
 # npm
 npm-debug.log*
 
-# Documentation
-docs/
-
 # Claude
 .claude/

@@ -178,6 +178,36 @@ export interface PendingSeverance {
 }
 
 /**
+ * A pending successor check for recurring task succession
+ * When a recurring task is completed and no successor is immediately found,
+ * this tracks the orphaned event so we can check again on the next sync
+ */
+export interface PendingSuccessorCheck {
+    /** Unique ID for this pending check */
+    id: string;
+    /** The original Chronos task ID (now orphaned) */
+    orphanTaskId: string;
+    /** Google Calendar event ID to transfer if successor found */
+    eventId: string;
+    /** Calendar ID the event is on */
+    calendarId: string;
+    /** Task title for successor matching */
+    title: string;
+    /** Task time for successor matching (null for all-day) */
+    time: string | null;
+    /** RRULE for pattern change detection */
+    recurrenceRule: string;
+    /** Original task date (successor must be after this) */
+    originalDate: string;
+    /** File path where the task was (successor likely nearby) */
+    filePath: string;
+    /** When this check was queued */
+    queuedAt: string;
+    /** Number of sync cycles we've checked */
+    checkCount: number;
+}
+
+/**
  * Information about a synced task stored in plugin data
  */
 export interface SyncedTaskInfo {
@@ -207,6 +237,8 @@ export interface SyncedTaskInfo {
     severedContentHash?: string;
     /** Whether this event was created as recurring */
     isRecurring?: boolean;
+    /** The RRULE string for recurrence pattern comparison */
+    recurrenceRule?: string;
 }
 
 /**
@@ -229,6 +261,8 @@ export interface ChronosSyncData {
     severedTaskIds: string[];
     /** Pending severances awaiting user review (ask mode) */
     pendingSeverances: PendingSeverance[];
+    /** Pending successor checks for recurring task succession */
+    pendingSuccessorChecks: PendingSuccessorCheck[];
 }
 
 /**
@@ -278,6 +312,9 @@ export class SyncManager {
             syncLog: [],
             pendingDeletions: [],
             recentlyDeleted: [],
+            severedTaskIds: [],
+            pendingSeverances: [],
+            pendingSuccessorChecks: [],
         };
         // Ensure arrays exist (for backwards compatibility)
         if (!this.syncData.pendingOperations) {
@@ -291,6 +328,15 @@ export class SyncManager {
         }
         if (!this.syncData.recentlyDeleted) {
             this.syncData.recentlyDeleted = [];
+        }
+        if (!this.syncData.severedTaskIds) {
+            this.syncData.severedTaskIds = [];
+        }
+        if (!this.syncData.pendingSeverances) {
+            this.syncData.pendingSeverances = [];
+        }
+        if (!this.syncData.pendingSuccessorChecks) {
+            this.syncData.pendingSuccessorChecks = [];
         }
     }
 
@@ -386,7 +432,8 @@ export class SyncManager {
      */
     computeMultiCalendarSyncDiff(
         currentTasks: ChronosTask[],
-        getTargetCalendar: (task: ChronosTask) => { calendarId: string; warning?: string }
+        getTargetCalendar: (task: ChronosTask) => { calendarId: string; warning?: string },
+        enableRecurringTasks: boolean = false
     ): MultiCalendarSyncDiff {
         const diff: MultiCalendarSyncDiff = {
             toCreate: [],
@@ -641,9 +688,70 @@ export class SyncManager {
         // Remove reconciled items from their original lists
         diff.toCreate = diff.toCreate.filter((_, i) => !reconciledNewTasks.has(i));
 
+        // THIRD RECONCILIATION PASS: Recurring Task Succession
+        // Only run if recurring tasks feature is enabled
+        // When a recurring task is completed: Tasks plugin creates a new instance with next date.
+        // The orphan (old task) and new task have: same title, same time, same file, but DIFFERENT date.
+        // We migrate the sync record to the successor to avoid creating duplicate calendar events.
+        const reconciledRecurringOrphans = new Set<string>();
+        const reconciledRecurringNewTasks = new Set<number>();
+
+        if (enableRecurringTasks) {
+            for (const orphanId of potentialOrphans) {
+                if (reconciledOrphans.has(orphanId)) continue; // Already reconciled in Pass 1 or 2
+
+                const orphanInfo = this.syncData.syncedTasks[orphanId];
+
+                // Only process recurring tasks
+                if (!orphanInfo.isRecurring) {
+                    continue;
+                }
+
+                // Try to find a matching successor task
+                for (let i = 0; i < diff.toCreate.length; i++) {
+                    if (reconciledNewTasks.has(i) || reconciledRecurringNewTasks.has(i)) continue;
+
+                    const newTask = diff.toCreate[i].task;
+
+                    // Succession criteria:
+                    // 1. Same file (successor is created near completed task)
+                    // 2. Same title
+                    // 3. Same time (or both all-day)
+                    // 4. New date is AFTER old date (it's the next occurrence)
+                    // 5. New task has recurrence
+                    const timeMatches = (newTask.time === orphanInfo.time) ||
+                        (newTask.time === null && (orphanInfo.time === null || orphanInfo.time === undefined));
+
+                    const oldDate = new Date(orphanInfo.date || '');
+                    const newDate = new Date(newTask.date);
+                    const isFutureDate = !isNaN(oldDate.getTime()) && !isNaN(newDate.getTime()) &&
+                        newDate.getTime() > oldDate.getTime();
+
+                    if (newTask.filePath === orphanInfo.filePath &&
+                        newTask.title === orphanInfo.title &&
+                        timeMatches &&
+                        isFutureDate &&
+                        newTask.recurrenceRule) {
+
+                        // Found a successor! Migrate the sync record
+                        reconciledRecurringOrphans.add(orphanId);
+                        reconciledRecurringNewTasks.add(i);
+
+                        // Migrate: transfer eventId to successor task
+                        this.migrateRecurringSyncRecord(orphanId, newTask);
+
+                        break; // Found match, move to next orphan
+                    }
+                }
+            }
+        }
+
+        // Filter out reconciled recurring successors from toCreate
+        diff.toCreate = diff.toCreate.filter((_, i) => !reconciledRecurringNewTasks.has(i));
+
         // Add remaining (unreconciled) orphans to the orphaned list
         for (const orphanId of potentialOrphans) {
-            if (!reconciledOrphans.has(orphanId)) {
+            if (!reconciledOrphans.has(orphanId) && !reconciledRecurringOrphans.has(orphanId)) {
                 const syncInfo = this.syncData.syncedTasks[orphanId];
                 // Severed tasks that weren't reconciled = user deleted the task after severing
                 // Silently remove them (don't trigger deletion prompts)
@@ -678,6 +786,7 @@ export class SyncManager {
             time: task.time,
             tags: task.tags,
             isRecurring: !!task.recurrenceRule,
+            recurrenceRule: task.recurrenceRule || undefined,
         };
     }
 
@@ -866,7 +975,8 @@ export class SyncManager {
         defaultDurationMinutes: number,
         defaultReminderMinutes: number[],
         timeZone: string,
-        safeMode: boolean = true
+        safeMode: boolean = true,
+        enableRecurringTasks: boolean = false
     ): ChangeSet {
         const operations: ChangeSetOperation[] = [];
         const needsEventData: ChangeSetOperation[] = [];
@@ -885,7 +995,7 @@ export class SyncManager {
                 durationMinutes: taskDuration,
                 reminderMinutes,
                 timeZone,
-                recurrenceRule: task.recurrenceRule,
+                recurrenceRule: enableRecurringTasks ? task.recurrenceRule : null,
             });
         }
 
@@ -903,7 +1013,7 @@ export class SyncManager {
                 durationMinutes: taskDuration,
                 reminderMinutes,
                 timeZone,
-                recurrenceRule: task.recurrenceRule,
+                recurrenceRule: enableRecurringTasks ? task.recurrenceRule : null,
             };
             operations.push(op);
             needsEventData.push(op); // Mark for pre-fetch
@@ -934,7 +1044,7 @@ export class SyncManager {
                     durationMinutes: taskDuration,
                     reminderMinutes,
                     timeZone,
-                    recurrenceRule: task.recurrenceRule,
+                    recurrenceRule: enableRecurringTasks ? task.recurrenceRule : null,
                 });
             } else if (eventRoutingBehavior === 'freshStart') {
                 // Delete old, create new - DIVERT if safeMode
@@ -952,7 +1062,7 @@ export class SyncManager {
                         durationMinutes: taskDuration,
                         reminderMinutes,
                         timeZone,
-                        recurrenceRule: task.recurrenceRule,
+                        recurrenceRule: enableRecurringTasks ? task.recurrenceRule : null,
                     };
 
                     divertedDeletions.push({
@@ -987,7 +1097,7 @@ export class SyncManager {
                         durationMinutes: taskDuration,
                         reminderMinutes,
                         timeZone,
-                        recurrenceRule: task.recurrenceRule,
+                        recurrenceRule: enableRecurringTasks ? task.recurrenceRule : null,
                     });
                 }
             }
@@ -1359,5 +1469,80 @@ export class SyncManager {
      */
     generatePendingSeveranceId(): string {
         return 'ps_' + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
+    }
+
+    // ==================== Pending Successor Checks ====================
+
+    /**
+     * Add a pending successor check for recurring task succession
+     */
+    addPendingSuccessorCheck(check: PendingSuccessorCheck): void {
+        // Don't add if already exists
+        const exists = this.syncData.pendingSuccessorChecks.some(
+            (c: PendingSuccessorCheck) => c.orphanTaskId === check.orphanTaskId
+        );
+        if (!exists) {
+            this.syncData.pendingSuccessorChecks.push(check);
+        }
+    }
+
+    /**
+     * Get all pending successor checks
+     */
+    getPendingSuccessorChecks(): PendingSuccessorCheck[] {
+        return this.syncData.pendingSuccessorChecks || [];
+    }
+
+    /**
+     * Remove a pending successor check by ID
+     */
+    removePendingSuccessorCheck(id: string): void {
+        this.syncData.pendingSuccessorChecks = this.syncData.pendingSuccessorChecks.filter(
+            (c: PendingSuccessorCheck) => c.id !== id
+        );
+    }
+
+    /**
+     * Clear all pending successor checks
+     */
+    clearPendingSuccessorChecks(): void {
+        this.syncData.pendingSuccessorChecks = [];
+    }
+
+    /**
+     * Generate a unique ID for pending successor checks
+     */
+    generatePendingSuccessorCheckId(): string {
+        return 'psc_' + Date.now().toString(36) + Math.random().toString(36).substring(2, 8);
+    }
+
+    /**
+     * Migrate sync record from orphan to successor (for recurring task succession)
+     * Transfers the eventId from the old task to the new task
+     */
+    migrateRecurringSyncRecord(orphanTaskId: string, successorTask: ChronosTask): void {
+        const orphanInfo = this.syncData.syncedTasks[orphanTaskId];
+        if (!orphanInfo) return;
+
+        const successorId = this.generateTaskId(successorTask);
+
+        // Create new sync record for successor with the existing eventId
+        this.syncData.syncedTasks[successorId] = {
+            eventId: orphanInfo.eventId,
+            contentHash: this.generateContentHash(successorTask),
+            calendarId: orphanInfo.calendarId,
+            lastSyncedAt: new Date().toISOString(),
+            filePath: successorTask.filePath,
+            lineNumber: successorTask.lineNumber,
+            title: successorTask.title,
+            date: successorTask.date,
+            time: successorTask.time,
+            tags: successorTask.tags,
+            isRecurring: true,
+            recurrenceRule: successorTask.recurrenceRule || orphanInfo.recurrenceRule,
+        };
+
+        // Remove the old orphan record
+        delete this.syncData.syncedTasks[orphanTaskId];
     }
 }

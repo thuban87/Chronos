@@ -1,55 +1,56 @@
 # Chronos Handoff Log
 
 **Last Updated:** January 11, 2026
-**Current Phase:** Event System COMPLETE, Recurring Succession PLANNED
-**Current Branch:** main
+**Current Phase:** Phase 18 COMPLETE - Recurring Task Succession  
+**Current Branch:** fix/recurring-events-duplicates
 **Version:** 1.5.0
 
 ---
 
-## Session: January 11, 2026 - Event System & Recurring Task Succession Planning
+## Session: January 11, 2026 - Recurring Task Succession Implementation
 
-### Feature 1: Event System for Inter-Plugin Communication (COMPLETE)
+### Feature: Recurring Task Succession (COMPLETE)
 
-Added an event system so other plugins (like Switchboard) can subscribe to Chronos events.
+Fixed the duplicate calendar event bug when completing recurring tasks with Tasks plugin. Feature is opt-in via settings toggle.
 
 #### What Was Built
 
 | Component | Description |
 |-----------|-------------|
-| **ChronosEvents class** | Typed EventEmitter with on/off/once/emit methods |
-| **Sync events** | sync-start, sync-complete, task-created, task-updated, task-completed, task-deleted |
-| **Agenda events** | agenda-refresh, task-starting-soon, task-now |
-| **Public API** | getSyncedTasks(), getSyncedTask(), isConnected(), getDefaultCalendarId() |
-| **Type exports** | ChronosEvents, ChronosEventPayloads, AgendaTaskEvent, ChronosTask, SyncedTaskInfo |
-| **Tags in events** | Added `tags: string[]` to AgendaTaskEvent and SyncedTaskInfo |
+| **Enable toggle** | `enableRecurringTasks` setting with confirmation modal |
+| **UI gating** | DateTimeModal hides "Repeat" dropdown when toggle OFF |
+| **RRULE gating** | buildChangeSet sets recurrenceRule to null when toggle OFF |
+| **Succession gating** | computeMultiCalendarSyncDiff skips Third Reconciliation Pass when toggle OFF |
+| **Third Reconciliation Pass** | Detects successor tasks and migrates sync records |
+| **migrateRecurringSyncRecord()** | Transfers eventId from orphan to successor |
+| **PendingSuccessorCheck** | Data structure for deferred successor matching |
+| **SeriesDisconnectionModal** | Modal when no successor found (delete/keep options) |
+| **RecurrenceChangeModal** | Modal when recurrence pattern changes |
+| **Emoji order fix** | Chronos emojis before 📅, then 🔁 (Tasks plugin compatibility) |
+| **Modal text fix** | Correct Tasks plugin settings path |
 
-#### Files Created/Modified
+#### Behavior Summary
+
+| Toggle | Modal Recurrence | 🔁 Creates RRULE | Succession Logic |
+|--------|------------------|------------------|------------------|
+| OFF    | Hidden           | No (single event)| Disabled (new events each time) |
+| ON     | Visible          | Yes              | Enabled (migrates records) |
+
+#### Files Modified
 
 | File | Changes |
 |------|---------|
-| `src/events.ts` | **NEW** - ChronosEvents class, event payload types, AgendaTaskEvent interface |
-| `main.ts` | Events property, sync event emissions, public API methods, type exports |
-| `src/agendaView.ts` | Agenda event emissions, toAgendaTaskEvent() helper |
-| `src/syncManager.ts` | Added `tags` field to SyncedTaskInfo, stored in recordSync() |
+| `main.ts` | Insert command emoji order fix, enableRecurringTasks setting, DateTimeModal parameter |
+| `src/dateTimeModal.ts` | enableRecurrence parameter, conditional recurrence UI display |
+| `src/syncManager.ts` | recurrenceRule in SyncedTaskInfo, PendingSuccessorCheck, Third Reconciliation Pass, migrateRecurringSyncRecord(), enableRecurringTasks gating |
+| `src/recurrenceParser.ts` | parseWeeklyByday() for Tasks plugin normalized format |
+| `src/recurringEnableModal.ts` | **NEW** - Warning modal for enabling recurring tasks |
+| `src/seriesDisconnectionModal.ts` | **NEW** - Modal for orphaned recurring tasks |
+| `src/recurrenceChangeModal.ts` | **NEW** - Modal for recurrence pattern changes |
+| `styles.css` | CSS for new modals |
+| `docs/ADR Priority List - Chronos.md` | Phase 18 marked COMPLETE |
 
-#### Usage Example
-
-```typescript
-const chronos = app.plugins.plugins['chronos-google-calendar-sync'];
-
-// Subscribe to events
-chronos.events.on('task-created', (payload) => {
-    console.log('Task created:', payload.task.title);
-});
-
-chronos.events.on('task-starting-soon', (payload) => {
-    console.log(`${payload.task.title} starts in ${payload.minutesUntilStart} min`);
-});
-
-// Get synced tasks
-const tasks = chronos.getSyncedTasks();
-```
+---
 
 #### Notes
 
