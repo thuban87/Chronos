@@ -9,7 +9,40 @@
 
 ## Next Session Prompt
 
-> Start a new branch `fix/multi-pc-sync` from main. Implement Phase 19: Multi-PC Sync Conflict Resolution following the implementation guide at `docs/Multi-PC Sync - Implementation Guide.md`. Begin with Phase 1 (Machine Identity) and Phase 2 (Sync Record Versioning) as they are non-breaking foundation work. The goal is to prevent sync conflicts when using Chronos across multiple machines.
+> **Goal:** Implement Phase 19: Multi-PC Sync Conflict Resolution to prevent sync conflicts when using Chronos across multiple machines (laptop + desktop) with a cloud-synced Obsidian vault.
+>
+> **The Problem:** Currently, `data.json` (which stores sync records like eventId, contentHash, calendarId for each task) is shared via cloud sync between machines. But without tracking "what I last synced" locally, a machine can't tell if another machine has made changes since it last saw the data. This causes:
+> - Duplicate calendar events when both machines sync the same new task
+> - Orphan prompts appearing on both machines for the same task
+> - Completed task handling racing between machines
+>
+> **The Solution:** Implement 3-way merge conflict detection:
+> 1. **Base State** (localStorage, local to machine): "What I last synced"
+> 2. **Remote State** (`data.json`, cloud synced): "What data.json currently says"
+> 3. **Local State** (markdown files): "What the task currently looks like"
+>
+> If Base ≠ Remote AND Base ≠ Local → **CONFLICT** (both machines changed)
+> Use **last-write-wins** (timestamp comparison) for automatic resolution.
+>
+> **Implementation Guide:** Read `docs/Multi-PC Sync - Implementation Guide.md` for full details including:
+> - 6 phased implementation plan with code snippets
+> - Data structure changes to `SyncedTaskInfo`
+> - New `LocalSyncCache` interface for localStorage
+> - `detectConflicts()` method implementation
+> - Testing checklist
+>
+> **Start with Phases 1-2** (non-breaking foundation work):
+> - **Phase 1:** Machine Identity — Generate UUID per machine, store in localStorage
+> - **Phase 2:** Sync Record Versioning — Add `version`, `lastModifiedBy`, `lastModifiedAt` to `SyncedTaskInfo`
+>
+> **Key Files:**
+> - `src/syncManager.ts` — SyncedTaskInfo interface, new methods
+> - `main.ts` — machineId property, pass to recordSync(), conflict handling in syncTasks()
+>
+> **Do NOT:**
+> - Run git commands (user handles git)
+> - Do not skip reading the implementation guide
+> - Do not Implement all 6 phases at once — start with 1-2, verify via testing, then update handoff doc by marking steps complete, then continue as directed
 
 ---
 
