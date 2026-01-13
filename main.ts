@@ -89,6 +89,11 @@ export default class ChronosPlugin extends Plugin {
 	pendingRerouteFailures: { task: ChronosTask; oldCalendarId: string; newCalendarId: string; error: string }[] = [];
 	private calendarNameCache: Map<string, string> = new Map();
 
+	// Throttle unchanged event verification to reduce API calls
+	// verifies external changes (Google-side deletions/modifications)
+	private static readonly UNCHANGED_VERIFICATION_THROTTLE_MS = 60 * 60 * 1000; // 1 hour
+	private lastUnchangedVerification: number = 0;
+
 	/**
 	 * Event emitter for inter-plugin communication
 	 * Other plugins can subscribe to Chronos events:
@@ -926,8 +931,13 @@ export default class ChronosPlugin extends Plugin {
 
 	/**
 	 * Get calendar name by ID (async version)
+	 * Checks cache first to avoid unnecessary API calls
 	 */
 	private async getCalendarNameById(calendarId: string): Promise<string> {
+		// Check cache first to avoid unnecessary API calls
+		const cached = this.calendarNameCache.get(calendarId);
+		if (cached) return cached;
+
 		try {
 			const calendars = await this.calendarApi.listCalendars();
 			// Populate cache while we have the data
@@ -982,8 +992,12 @@ export default class ChronosPlugin extends Plugin {
 	 * Sync all eligible tasks to Google Calendar
 	 * Uses batch API for dramatically improved performance
 	 * Also handles completed and deleted tasks
+	 * @param silent If true, suppress notices unless there are changes
+	 * @param forceVerify If true, always verify unchanged events exist in Google Calendar.
+	 *                    If false, applies 1-hour throttle to reduce API calls.
+	 *                    Manual syncs should use forceVerify=true (default).
 	 */
-	async syncTasks(silent: boolean = false): Promise<void> {
+	async syncTasks(silent: boolean = false, forceVerify: boolean = true): Promise<void> {
 		if (!this.isAuthenticated()) {
 			if (!silent) new Notice('Chronos: Not connected. Go to Settings → Chronos to connect your Google account.');
 			return;
@@ -1441,7 +1455,13 @@ export default class ChronosPlugin extends Plugin {
 			}
 
 			// Verify "unchanged" events still exist - batch check
-			if (diff.unchanged.length > 0) {
+			// This detects external changes (events deleted/moved in Google Calendar)
+			// Apply 1-hour throttle for auto-sync to reduce API calls; manual sync bypasses throttle
+			const shouldVerifyUnchanged = forceVerify ||
+				(Date.now() - this.lastUnchangedVerification > ChronosPlugin.UNCHANGED_VERIFICATION_THROTTLE_MS);
+
+			if (diff.unchanged.length > 0 && shouldVerifyUnchanged) {
+				this.lastUnchangedVerification = Date.now();
 				const existenceCheckOps: ChangeSetOperation[] = diff.unchanged.map(({ task, calendarId }) => {
 					const taskId = this.syncManager.generateTaskId(task);
 					const syncInfo = this.syncManager.getSyncInfo(taskId);
@@ -2192,7 +2212,8 @@ export default class ChronosPlugin extends Plugin {
 
 		this.syncIntervalId = window.setInterval(async () => {
 			// Run sync silently (no notices unless there are changes)
-			await this.syncTasks(true);
+			// Use forceVerify=false to apply throttle on unchanged event verification
+			await this.syncTasks(true, false);
 		}, intervalMs);
 
 	}
