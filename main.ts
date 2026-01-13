@@ -1031,11 +1031,26 @@ export default class ChronosPlugin extends Plugin {
 			const uncompletedTasks = allTasks.filter(t => !t.isCompleted);
 			const completedTasksList = allTasks.filter(t => t.isCompleted);
 
+			// Build completed task IDs set FIRST (needed for orphan detection exclusion)
+			// Also collect completed tasks with sync info for later processing
+			const completedTaskIds = new Set<string>();
+			const completedWithSync: { task: ChronosTask; syncInfo: SyncedTaskInfo }[] = [];
+			for (const task of completedTasksList) {
+				const taskId = this.syncManager.generateTaskId(task);
+				const syncInfo = this.syncManager.getSyncInfo(taskId);
+				if (syncInfo) {
+					completedTaskIds.add(taskId);
+					completedWithSync.push({ task, syncInfo });
+				}
+			}
+
 			// Compute what needs to be done using multi-calendar routing
+			// Pass completedTaskIds to exclude them from orphan detection
 			const diff = this.syncManager.computeMultiCalendarSyncDiff(
 				uncompletedTasks,
 				(task) => this.getTargetCalendarForTask(task),
-				this.settings.enableRecurringTasks
+				this.settings.enableRecurringTasks,
+				completedTaskIds
 			);
 
 			// Show warnings for tasks with multiple mapped tags
@@ -1044,16 +1059,6 @@ export default class ChronosPlugin extends Plugin {
 			}
 
 			const timeZone = this.getTimeZone();
-
-			// Collect completed tasks that need action (have sync info)
-			const completedWithSync: { task: ChronosTask; syncInfo: SyncedTaskInfo }[] = [];
-			for (const task of completedTasksList) {
-				const taskId = this.syncManager.generateTaskId(task);
-				const syncInfo = this.syncManager.getSyncInfo(taskId);
-				if (syncInfo) {
-					completedWithSync.push({ task, syncInfo });
-				}
-			}
 
 			// Build the complete ChangeSet (collect phase)
 			const changeSet = this.syncManager.buildChangeSet(

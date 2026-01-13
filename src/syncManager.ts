@@ -429,11 +429,14 @@ export class SyncManager {
      * Compare current tasks with synced state, supporting per-task calendar routing
      * @param currentTasks All uncompleted tasks
      * @param getTargetCalendar Function that returns target calendar and optional warning for a task
+     * @param enableRecurringTasks Whether recurring task succession is enabled
+     * @param completedTaskIds Set of task IDs for completed tasks (to exclude from orphan detection)
      */
     computeMultiCalendarSyncDiff(
         currentTasks: ChronosTask[],
         getTargetCalendar: (task: ChronosTask) => { calendarId: string; warning?: string },
-        enableRecurringTasks: boolean = false
+        enableRecurringTasks: boolean = false,
+        completedTaskIds: Set<string> = new Set()
     ): MultiCalendarSyncDiff {
         const diff: MultiCalendarSyncDiff = {
             toCreate: [],
@@ -505,9 +508,10 @@ export class SyncManager {
         // Find orphaned entries (synced tasks no longer in vault)
         // Include severed tasks - they need to participate in reconciliation
         // (so if the task is edited, we can detect it and unsever)
+        // EXCLUDE completed tasks - they are handled separately via completedWithSync
         const potentialOrphans: string[] = [];
         for (const taskId of Object.keys(this.syncData.syncedTasks)) {
-            if (!seenTaskIds.has(taskId)) {
+            if (!seenTaskIds.has(taskId) && !completedTaskIds.has(taskId)) {
                 potentialOrphans.push(taskId);
             }
         }
