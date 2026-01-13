@@ -491,6 +491,7 @@ Features that are valuable but complex or low priority. May implement based on u
 | Accidental completion edge case | Low | Unchecking creates duplicate (user can delete manually) |
 | Severed task edit-back edge case | Medium | When severed task is edited, then edited back to original time, reconciliation doesn't detect the change and task remains severed. Workaround: edit to a different time than original. |
 | **Recurring task completion duplicates** | **High** | **✓ Fixed (Phase 18) - Third reconciliation pass migrates sync records to successor tasks.** |
+| ~~Completed tasks marked as orphans~~ | ~~High~~ | ✓ Fixed - Pass completed task IDs to orphan detection to exclude them. |
 | Recurring modals need polish | Low | SeriesDisconnectionModal and RecurrenceChangeModal need improved copy and UX. |
 
 ---

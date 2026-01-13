@@ -1,9 +1,75 @@
 # Chronos Handoff Log
 
-**Last Updated:** January 11, 2026
-**Current Phase:** Phase 18 COMPLETE - Recurring Task Succession  
-**Current Branch:** fix/recurring-events-duplicates
-**Version:** 1.5.0
+**Last Updated:** January 12, 2026
+**Current Phase:** Phase 19 PLANNED - Multi-PC Sync Conflict Resolution  
+**Current Branch:** main (feature branch: fix/multi-pc-sync)
+**Version:** 1.5.1
+
+---
+
+## Next Session Prompt
+
+> Start a new branch `fix/multi-pc-sync` from main. Implement Phase 19: Multi-PC Sync Conflict Resolution following the implementation guide at `docs/Multi-PC Sync - Implementation Guide.md`. Begin with Phase 1 (Machine Identity) and Phase 2 (Sync Record Versioning) as they are non-breaking foundation work. The goal is to prevent sync conflicts when using Chronos across multiple machines.
+
+---
+
+## Session: January 12, 2026 - API Optimization + Orphan Bug Fix + Multi-PC Sync Planning
+
+### Fix 1: API Call Optimization (COMPLETE)
+
+Reduced excessive Google Calendar API calls by ~83%.
+
+| Component | Change |
+|-----------|--------|
+| **Cache-first `getCalendarNameById`** | Check `calendarNameCache` before API call |
+| **1-hour throttle on unchanged verification** | Auto-sync only; manual sync bypasses |
+| **forceVerify parameter** | Added to `syncTasks()` to control verification |
+
+**Impact:** With 97 events, reduced from ~14,000 to ~2,300 `Events.Get` calls/day.
+
+**Branch:** `fix/api-handling` → merged to main
+
+---
+
+### Fix 2: Completed Tasks Mislabeled as Orphans (COMPLETE)
+
+Fixed bug where completing a task triggered Safety Net orphan detection.
+
+**Root Cause:** `computeMultiCalendarSyncDiff()` only received uncompleted tasks, so completed task sync IDs appeared as orphans.
+
+**Fix:** Added `completedTaskIds` parameter to `computeMultiCalendarSyncDiff()` to exclude them from orphan detection.
+
+| File | Changes |
+|------|---------|
+| `src/syncManager.ts` | Added `completedTaskIds: Set<string>` parameter, exclude from `potentialOrphans` |
+| `main.ts` | Build completed task IDs set before diff, pass to function |
+
+**Branch:** `fix/mislabeled-orphans` → merged to main
+
+---
+
+### Feature: Multi-PC Sync Conflict Resolution (PLANNED)
+
+Identified architectural gap when using Chronos across multiple machines with cloud-synced vaults.
+
+**Problem:** `data.json` sync records are shared via cloud sync, but without a "base state" cache, machines can't detect when another machine has made changes.
+
+**Solution:** Implement 3-way merge conflict detection:
+- Store "Base State" in `localStorage` (local to each machine)
+- Compare Base vs Remote (`data.json`) vs Local (markdown)
+- Use last-write-wins for resolution
+
+**Implementation Guide:** `docs/Multi-PC Sync - Implementation Guide.md`
+
+---
+
+### Files Modified This Session
+
+| File | Changes |
+|------|---------|
+| `main.ts` | Cache-first getCalendarNameById, forceVerify param, completedTaskIds passing |
+| `src/syncManager.ts` | completedTaskIds param in computeMultiCalendarSyncDiff |
+| `docs/ADR Priority List - Chronos.md` | Added fixed bugs, API throttle limitation |
 
 ---
 
