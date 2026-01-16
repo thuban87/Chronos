@@ -19,3 +19,6 @@ npm-debug.log*
 
 # Claude
 .claude/
+
+# Docs
+docs/sync.ffs_db
