@@ -1033,13 +1033,20 @@ export default class ChronosPlugin extends Plugin {
 
 			// Build completed task IDs set FIRST (needed for orphan detection exclusion)
 			// Also collect completed tasks with sync info for later processing
+			// NOTE: Only exclude NON-RECURRING completed tasks from orphan detection.
+			// Recurring completed tasks MUST participate in Third Reconciliation Pass
+			// so they can be matched with successor tasks (same title, future date).
 			const completedTaskIds = new Set<string>();
 			const completedWithSync: { task: ChronosTask; syncInfo: SyncedTaskInfo }[] = [];
 			for (const task of completedTasksList) {
 				const taskId = this.syncManager.generateTaskId(task);
 				const syncInfo = this.syncManager.getSyncInfo(taskId);
 				if (syncInfo) {
-					completedTaskIds.add(taskId);
+					// Only exclude non-recurring tasks from orphan detection
+					// Recurring tasks need to stay in orphan pool for succession matching
+					if (!syncInfo.isRecurring) {
+						completedTaskIds.add(taskId);
+					}
 					completedWithSync.push({ task, syncInfo });
 				}
 			}
