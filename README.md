@@ -20,11 +20,22 @@ Chronos syncs your Obsidian tasks with Google Calendar, giving you reliable remi
 
 ## Installation
 
-### From Obsidian Community Plugins (Coming Soon)
+### Current Status: Beta
 
-1. Open Settings → Community plugins
-2. Search for "Chronos"
-3. Click Install, then Enable
+Chronos is currently in beta/development mode. We're polishing features and testing end-to-end to ensure everything works perfectly before submitting to the official Obsidian Community Plugins store.
+
+### Install via BRAT (Recommended for Testing)
+
+The easiest way to test Chronos is using the BRAT plugin:
+
+1. Install the **BRAT** plugin from Obsidian's Community Plugins (search for "Obsidian42 - BRAT")
+2. Enable BRAT in your plugin settings
+3. Open the command palette (`Ctrl/Cmd + P`) and run: **BRAT: Add a beta plugin for testing**
+4. Paste this repository URL: `https://github.com/thuban87/Chronos`
+5. Click **Add Plugin** and wait for installation to complete
+6. Go to Settings → Community Plugins, find Chronos, and enable it
+
+BRAT will automatically check for updates and keep your plugin current.
 
 ### Manual Installation
 
@@ -82,6 +93,16 @@ Chronos requires you to create your own Google Cloud credentials. This keeps you
 
 You're all set! Your tasks will now sync to Google Calendar.
 
+> [!CAUTION]
+> **Protect Your Authentication Tokens**
+> 
+> Don't sync your `.obsidian/plugins/chronos/data.json` file to public repositories. It contains your Google auth tokens.
+> 
+> If you version control your vault, add this to your `.gitignore`:
+> ```
+> .obsidian/plugins/chronos/data.json
+> ```
+
 ### 6. Configure Sync Settings (Optional)
 
 | Setting | Description | Default |
@@ -93,7 +114,11 @@ You're all set! Your tasks will now sync to Google Calendar.
 
 ## Task Format
 
-Chronos uses the [Tasks plugin](https://publish.obsidian.md/tasks/) format with a Chronos-specific time marker:
+Chronos uses a syntax similar to the [Tasks plugin](https://github.com/obsidian-tasks-group/obsidian-tasks) for convenience if you use both plugins. However, **Chronos does not require Tasks to be installed** - it works completely standalone with its own symbols.
+
+The easiest way to format tasks is using the command **"Chronos: Insert date/time for task"** (Ctrl/Cmd + P). You can also set this command to a custom hotkey in Settings for quick access.
+
+> **Note**: For recurring events (🔁), you **must** have the Tasks plugin installed and configured to create new tasks BELOW completed tasks (not above) in Settings → Tasks → "New task location". This allows Chronos to integrate with Tasks' recurrence handling logic.
 
 ```markdown
 - [ ] Task with date and time 📅 2026-01-15 ⏰ 14:00
@@ -109,6 +134,9 @@ Chronos uses the [Tasks plugin](https://publish.obsidian.md/tasks/) format with 
 ### Optional Elements
 
 - **Time**: `⏰ HH:mm` format (24-hour) - without this, creates an all-day event
+- **Duration**: `⏱️ 2h`, `⏱️ 30m`, `⏱️ 1h30m` - custom event duration (overrides default)
+- **Custom Reminders**: `🔔 60,30,10` - reminder minutes before event (comma-separated)
+- **Recurrence**: `🔁 every week`, `🔁 every monday, wednesday, friday` - requires Tasks plugin installed
 - **No-sync**: `🚫` emoji excludes the task from syncing
 
 ## Commands
@@ -120,6 +148,8 @@ Access via Command Palette (`Ctrl/Cmd + P`):
 | Chronos: Sync tasks to Google Calendar now | Manually trigger a sync |
 | Chronos: Scan vault for sync-eligible tasks | View all tasks that will be synced |
 | Chronos: Insert date/time for task | Open modal to insert date/time markers |
+| Chronos: Toggle today's agenda sidebar | Open/close the agenda sidebar |
+| Chronos: Import agenda to current file | Insert today's agenda (or agenda date) into the active note |
 | Chronos: Review pending deletions | Review and approve/reject pending event deletions |
 | Chronos: Review disconnected events | Review events moved/deleted in Google Calendar |
 | Chronos: View sync history | View sync log and recently deleted events |
@@ -137,20 +167,35 @@ The status bar shows:
 
 ### Creating Events
 - Tasks with `📅` dates are synced as calendar events
-- Tasks with `⏰` times become timed events
+- Tasks with `⏰` times become timed events with configurable duration
 - Tasks without times become all-day events
+- Events are created in batches for improved performance (up to 50 per batch request)
 
 ### Updating Events
-- When you edit a task (change time, title, etc.), the calendar event is updated on next sync
-- Moving a task to a different line doesn't affect sync tracking
+- When you edit a task (change time, title, date, etc.), Chronos detects the change and updates the calendar event
+- Two-pass reconciliation system ensures edits are detected even when tasks move between files or lines
+- User-edited data in Google Calendar (description, location, attendees) is preserved during updates
+- Moving a task to a different line or file doesn't affect sync tracking
 
 ### Completing Tasks
 - When you check off a task (`- [x]`), Chronos handles the calendar event based on your setting:
   - **Mark as completed**: Appends "- Completed MM-DD-YYYY, HH:mm" to the event title
-  - **Delete from calendar**: Removes the event entirely
+  - **Delete from calendar**: Removes the event (Safety Net applies if enabled)
+- **Recurring tasks**: When enabled, Chronos detects successor tasks and migrates the calendar event instead of creating duplicates
 
 ### Deleting Tasks
-- If you delete a task line from your notes, the corresponding calendar event is deleted
+- If you delete a task line from your notes and have **Safety Net enabled** (default), the deletion is queued for your review
+- With Safety Net disabled, the corresponding calendar event is deleted immediately
+
+### Multi-Calendar Routing
+- Tasks with mapped tags (e.g., `#work`) route to their designated calendars
+- Three routing modes when calendars change: Preserve (move event), Keep Both (duplicate), Fresh Start (delete + create)
+- All routing operations respect Safety Net settings
+
+### Batch Operations
+- All sync operations (create, update, delete) are batched for efficiency
+- Up to 50 operations per batch request dramatically improves sync speed
+- Large syncs complete in 2-5 seconds instead of 30-50 seconds
 
 ### Externally Moved/Deleted Events
 - If you move or delete an event in Google Calendar, behavior depends on your External Event Handling setting
@@ -264,8 +309,17 @@ Google tokens expire periodically. When this happens:
 - **No external servers**: Chronos communicates directly with Google Calendar API
 - **No shared quotas**: Your API usage is completely separate from other users
 - **Minimal permissions**: Only requests access to calendar events, not your full Google account
+- **Deletion protection**: No calendar events are deleted unless you explicitly approve (Safety Net) or disable it in settings
 
-> **Important**: Don't sync your `.obsidian/plugins/chronos/data.json` file to public repositories. It contains your auth tokens. Add it to your `.gitignore` if you version control your vault.
+> [!CAUTION]
+> **Protect Your Authentication Tokens**
+> 
+> Don't sync your `.obsidian/plugins/chronos/data.json` file to public repositories. It contains your Google auth tokens.
+> 
+> If you version control your vault, add this to your `.gitignore`:
+> ```
+> .obsidian/plugins/chronos/data.json
+> ```
 
 ## Support
 
@@ -278,6 +332,8 @@ MIT License - see [LICENSE](LICENSE) file for details.
 
 ## Credits
 
-Created by Brad Wales with assistance from Claude AI.
+Created by Brad Wales.
 
-Inspired by the need for reliable task reminders that work across all devices.
+Built with inspiration from the excellent [Tasks plugin](https://github.com/obsidian-tasks-group/obsidian-tasks) - thank you for building a fantastic foundation for task management in Obsidian!
+
+Check out my other Obsidian plugin: [tagforge](https://github.com/thuban87/tagforge) - Smart tag management and navigation for your vault.

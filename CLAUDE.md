@@ -1,7 +1,29 @@
 # CLAUDE.md - Chronos
 
 **Purpose:** Instructions for AI assistants working on the Chronos project.
-**Last Updated:** January 3, 2026
+**Last Updated:** January 16, 2026
+
+---
+
+## OOP Architecture (January 2026 Decision)
+
+**Architectural Direction**: Moving to object-oriented programming style for all new features and refactoring.
+
+### Current State
+- `src/` folder contains properly structured classes (SyncManager, TaskParser, GoogleCalendarApi, etc.)
+- `main.ts` is still monolithic (~4800 lines) with mixed concerns
+
+### Going Forward
+1. **All new features** go in `src/` folder as focused classes
+2. **Bug fixes and improvements** to existing features should refactor logic to `src/` when touched
+3. **Gradual refactoring** of main.ts into smaller orchestration classes
+
+### First Refactoring: SyncOrchestrator
+- Move sync logic from `main.ts` to `src/syncOrchestrator.ts`
+- Main.ts becomes thin wrapper calling orchestrator
+- See implementation plan for details
+
+**Rationale**: Better testability, maintainability, and separation of concerns.
 
 ---
 
