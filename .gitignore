@@ -8,6 +8,7 @@ main.js
 .vscode/
 *.swp
 *.swo
+chronos.code-workspace
 
 # OS
 .DS_Store
@@ -17,8 +18,8 @@ desktop.ini
 # npm
 npm-debug.log*
 
-# Claude
+# Local development files
 .claude/
-
-# Docs
-docs/sync.ffs_db
+CLAUDE.md
+GEMINI.md
+docs/
