@@ -103,7 +103,32 @@ You're all set! Your tasks will now sync to Google Calendar.
 > .obsidian/plugins/chronos/data.json
 > ```
 
-### 6. Configure Sync Settings (Optional)
+### 6. Publish Your App (Recommended)
+
+By default, your Google Cloud app is in **Testing mode**, which causes OAuth tokens to expire every 7 days. This means you'd need to re-authenticate weekly. To avoid this:
+
+1. Go to **APIs & Services → OAuth consent screen**
+2. Click the **PUBLISH APP** button near the top
+3. A warning will appear about verification - click **CONFIRM**
+
+Your app is now in **Production** mode. Tokens will persist properly and you won't need to re-authenticate.
+
+> [!TIP]
+> **Verification is NOT required**
+> 
+> Google may prompt you to "verify" your app - you can safely ignore this. Verification is only needed for apps with many users or sensitive scopes. For personal use, publishing without verification works perfectly.
+
+> [!NOTE]
+> **About the "Unverified App" Warning**
+> 
+> Since your app isn't verified by Google, users will see a warning screen during their first authentication. This is normal for personal apps:
+> 1. Click **Advanced**
+> 2. Click **Go to [Your App Name] (unsafe)**
+> 3. Continue with authorization
+> 
+> You only see this once. Since you control both the app and your Google account, this is perfectly safe.
+
+### 7. Configure Sync Settings (Optional)
 
 | Setting | Description | Default |
 |---------|-------------|---------|
